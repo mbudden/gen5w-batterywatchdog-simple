@@ -152,7 +152,10 @@ when the car was driven and parked.
 The current warnings are simple thresholds. Better checks, such as how fast
 the 12V recovers at the start of a drive or whether it drains faster while
 parked than it used to, need real logs from many cars, and above all from
-batteries that later failed or were replaced. If you're willing to help:
+batteries that later failed or were replaced. Sharing is entirely optional:
+the app mentions it once, the first time it has readings, and the steps are
+always under **Advanced → Share data**. Nothing is ever sent from the car. If
+you're willing to help:
 
 1. Export to USB as above. A few weeks of driving is useful, a few months is
    better.

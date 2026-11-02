@@ -2,6 +2,7 @@ package com.nemesis.batterywatchdog;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.SharedPreferences;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -188,6 +189,7 @@ public class MainActivity extends Activity {
         advBox.addView(button("Restart monitor", new View.OnClickListener() { public void onClick(View v) { restartService(); } }));
         advBox.addView(button("Test run (10 s)", new View.OnClickListener() { public void onClick(View v) { testRun(); } }));
         advBox.addView(button("Export to USB", new View.OnClickListener() { public void onClick(View v) { exportToUsb(); } }));
+        advBox.addView(button("Share data\u2026", new View.OnClickListener() { public void onClick(View v) { showShareSteps(); } }));
         advBox.addView(button("Clear history", new View.OnClickListener() { public void onClick(View v) { clearHistory(); } }));
         overrideBtn = button("Unverified firmware: use built-in numbers\u2026", new View.OnClickListener() { public void onClick(View v) { confirmOverride(); } });
         advBox.addView(overrideBtn);
@@ -202,6 +204,7 @@ public class MainActivity extends Activity {
         setContentView(root);
         refreshButtons();
         startVerification();
+        handler.postDelayed(askShare, 2000);
     }
 
     @Override
@@ -592,6 +595,50 @@ public class MainActivity extends Activity {
     }
 
     boolean verified() { return txSoc > 0; }
+
+    // ---- one-time, opt-in request to share data ---------------------------------
+    // Shown once, the first time the app opens with verified readings (on an
+    // unverified firmware nothing is collected, so it waits). Nothing is ever sent
+    // from the car: it only explains how to export and share, if the owner wants to.
+    static final String PREFS = "ui", ASKED_SHARE = "share_asked";
+    int shareTries;
+    final Runnable askShare = new Runnable() { public void run() { maybeAskToShare(); } };
+
+    void maybeAskToShare() {
+        if (isFinishing()) return;
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (p.getBoolean(ASKED_SHARE, false)) return;
+        if (!verified()) {
+            // still checking: look again shortly; paused: ask on a later start
+            if ("checking".equals(verifyState) && ++shareTries < 20) handler.postDelayed(askShare, 3000);
+            return;
+        }
+        p.edit().putBoolean(ASKED_SHARE, true).apply();
+        new AlertDialog.Builder(this).setTitle("Help improve Battery Watchdog?")
+            .setMessage("The warnings are simple for now. Logs from real cars, especially ones whose 12V battery "
+                + "later failed, would help build smarter checks for everyone.\n\n"
+                + "This is completely optional, and nothing is ever sent from your car. If you'd like to help, "
+                + "after a few weeks of driving you can export your data to a USB drive and share it on GitHub.\n\n"
+                + "You won't be asked again. The steps are always in Advanced \u2192 Share data.")
+            .setPositiveButton("Show me how", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface di, int w) { showShareSteps(); } })
+            .setNegativeButton("No thanks", null).show();
+    }
+
+    void showShareSteps() {
+        new AlertDialog.Builder(this).setTitle("Share your data (optional)")
+            .setMessage("1. Drive as usual for a few weeks. The longer the log, the more useful it is.\n"
+                + "2. Insert a USB drive and tap Advanced \u2192 Export to USB.\n"
+                + "3. On a computer, zip the BatteryWatchdog-export-\u2026 folder from the drive.\n"
+                + "4. Go to github.com/zpoon/gen5w-BatteryWatchdog, open Issues \u2192 New issue \u2192 "
+                + "Share battery data, fill in what you know about your 12V battery, and attach the zip.\n\n"
+                + "If your battery fails or is replaced later, a comment on that issue helps a lot.\n\n"
+                + "An export has no location, VIN or account details, but it does show when the car was driven. "
+                + "To hide the dates, see \"Share your data\" in the README.")
+            .setPositiveButton("Export to USB now", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface di, int w) { exportToUsb(); } })
+            .setNegativeButton("Close", null).show();
+    }
 
     static final String SVC_ID = "battery.watchdog/watch";
     static final String SVC_LOG = "/data/nemesis/logs/battery.watchdog/watch.log";
