@@ -39,7 +39,7 @@ echo "== package manifest (version $("$ROOT/tools/version.sh" name), code $("$RO
 sed -e "s/android:versionName=\"[^\"]*\"/android:versionName=\"$("$ROOT/tools/version.sh" name)\"/" \
     -e "s/android:versionCode=\"[^\"]*\"/android:versionCode=\"$("$ROOT/tools/version.sh" code)\"/" \
     "$APP/AndroidManifest.xml" > "$OUT/AndroidManifest.xml"
-"$BT/aapt" package -f -M "$OUT/AndroidManifest.xml" -I "$AJ" -F "$OUT/base.apk"
+"$BT/aapt" package -f -M "$OUT/AndroidManifest.xml" -S "$APP/res" -I "$AJ" -F "$OUT/base.apk"
 ( cd "$OUT" && "$BT/aapt" add base.apk classes.dex >/dev/null )
 
 echo "== align =="
@@ -62,5 +62,5 @@ fi
   --out "$APP/batterywatchdog.apk" "$OUT/aligned.apk"
 
 echo "== done: $APP/batterywatchdog.apk =="
-"$BT/aapt" dump badging "$APP/batterywatchdog.apk" 2>/dev/null | grep -E "package|sdkVersion" | head
+"$BT/aapt" dump badging "$APP/batterywatchdog.apk" 2>/dev/null | grep -E "package|sdkVersion|application:|launchable-activity" | head
 echo "Copy app/batterywatchdog.apk to package/app/batterywatchdog.apk, then build the NEMESIS zip."

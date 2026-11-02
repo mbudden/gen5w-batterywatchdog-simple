@@ -6,6 +6,7 @@
   <uses-sdk android:minSdkVersion="19" android:targetSdkVersion="19" />
   <application
       android:label="Battery Watchdog"
+      android:icon="@drawable/ic_launcher"
       android:allowBackup="false">
     <activity
         android:name=".MainActivity"
@@ -14,6 +15,8 @@
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />
         <category android:name="android.intent.category.DEFAULT" />
+        <!-- LAUNCHER: NEMESIS Manager's home grid lists apps with a launcher entry -->
+        <category android:name="android.intent.category.LAUNCHER" />
       </intent-filter>
     </activity>
   </application>
