@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="Battery Watchdog icon" width="96" align="right">
+
 # Battery Watchdog
 
 A [NEMESIS](#requirements) package for Hyundai and Kia cars with the
