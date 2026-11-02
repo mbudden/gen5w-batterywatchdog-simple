@@ -628,14 +628,14 @@ public class MainActivity extends Activity {
     void showShareSteps() {
         new AlertDialog.Builder(this).setTitle("Share your data (optional)")
             .setMessage("1. Drive as usual for a few weeks. The longer the log, the more useful it is.\n"
-                + "2. Insert a USB drive and tap Advanced \u2192 Export to USB.\n"
-                + "3. On a computer, zip the BatteryWatchdog-export-\u2026 folder from the drive.\n"
-                + "4. Go to github.com/zpoon/gen5w-BatteryWatchdog, open Issues \u2192 New issue \u2192 "
-                + "Share battery data, fill in what you know about your 12V battery, and attach the zip.\n\n"
+                + "2. Insert a USB drive and tap Export below (or Advanced \u2192 Export to USB). Choose "
+                + "\"For sharing, dates hidden\" if you'd rather not show when you drive.\n"
+                + "3. On a computer or phone, go to github.com/zpoon/gen5w-BatteryWatchdog, open Issues \u2192 "
+                + "New issue \u2192 Share battery data, fill in what you know about your 12V battery, and attach "
+                + "the .zip from the drive.\n\n"
                 + "If your battery fails or is replaced later, a comment on that issue helps a lot.\n\n"
-                + "An export has no location, VIN or account details, but it does show when the car was driven. "
-                + "To hide the dates, see \"Share your data\" in the README.")
-            .setPositiveButton("Export to USB now", new DialogInterface.OnClickListener() {
+                + "An export has no location, VIN or account details.")
+            .setPositiveButton("Export", new DialogInterface.OnClickListener() {
                 public void onClick(DialogInterface di, int w) { exportToUsb(); } })
             .setNegativeButton("Close", null).show();
     }
@@ -744,9 +744,22 @@ public class MainActivity extends Activity {
             "enabled", "warn_pct", "drop_pct", "interval_s", "toast_start", "decode", "scale_x10" };
 
     void exportToUsb() {
+        new AlertDialog.Builder(this).setTitle("Export to USB")
+            .setMessage("Export writes a folder you can open in Excel or Google Sheets, and a zip of the same "
+                + "files, ready to attach to a \"Share battery data\" issue.\n\n"
+                + "\"For sharing, dates hidden\" writes only a zip with the battery log, with every date moved back "
+                + "by the same random number of weeks. Use it if you'd rather not show when you drive.")
+            .setPositiveButton("Export", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface di, int w) { runExport(false); } })
+            .setNeutralButton("For sharing, dates hidden", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface di, int w) { runExport(true); } })
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    void runExport(final boolean hideDates) {
         toast("Exporting\u2026");
         new Thread(new Runnable() { public void run() {
-            final String msg = doExport();
+            final String msg = hideDates ? doShareExport() : doExport();
             handler.post(new Runnable() { public void run() {
                 new AlertDialog.Builder(MainActivity.this).setTitle("Export to USB").setMessage(msg)
                     .setPositiveButton("Close", null).show();
@@ -754,15 +767,49 @@ public class MainActivity extends Activity {
         } }).start();
     }
 
-    String doExport() {
-        // first writable USB root
+    /** the first writable USB root, or null */
+    String usbRoot() {
         StringBuilder probe = new StringBuilder();
         for (String r : USB_ROOTS) {
             probe.append("[ -d " + r + " ] && touch " + r + "/.bwd_w 2>/dev/null && rm " + r + "/.bwd_w && echo " + r + " && exit 0; ");
         }
         String usb = runRoot("( " + probe + " ) 2>/dev/null").trim();
-        if (usb.length() == 0 || !usb.startsWith("/")) return "No USB drive found. Insert a FAT32 or exFAT drive and try again.";
-        usb = usb.split("\n")[0].trim();
+        if (usb.length() == 0 || !usb.startsWith("/")) return null;
+        return usb.split("\n")[0].trim();
+    }
+
+    static final String NO_USB = "No USB drive found. Insert a FAT32 or exFAT drive and try again.";
+
+    /** state files read through root (the app can't read the state dir itself) */
+    Map<String, String> readState(String[] names) {
+        Map<String, String> m = new java.util.LinkedHashMap<String, String>();
+        for (String f : names) {
+            String q = shq(STATE + "/" + f);
+            if (runRoot("[ -f " + q + " ] && echo y").trim().equals("y")) m.put(f, runRoot("cat " + q + " 2>/dev/null"));
+        }
+        return m;
+    }
+
+    /** Export for sharing: only a zip, dates shifted, no file name or entry time that shows the date. */
+    String doShareExport() {
+        String usb = usbRoot();
+        if (usb == null) return NO_USB;
+        Map<String, String> raw = readState(ShareZip.SHARE_FILES);
+        if (raw.get("log.csv") == null && raw.get("log.old.csv") == null) return "There are no readings to export yet.";
+        String info = "app: " + appVersion() + "\nfirmware: " + fw + "\nverification: " + verifyState + "\n";
+        String name = "BatteryWatchdog-share-" + ShareZip.randomId() + ".zip";
+        String err;
+        try { err = writeRootBytes(usb + "/" + name, ShareZip.share(raw, info, ShareZip.randomShift())); }
+        catch (Exception e) { err = e.toString(); }
+        runRoot("sync");
+        if (err.length() > 0) return "Couldn't write " + name + " to " + usb + ":\n" + err;
+        return "Wrote " + name + " to " + usb + ".\n\nIt has the battery log, drives and warnings, with every date moved back "
+            + "by the same random number of weeks. Attach it to a \"Share battery data\" issue on GitHub. Thank you!";
+    }
+
+    String doExport() {
+        String usb = usbRoot();
+        if (usb == null) return NO_USB;
 
         String stamp = new SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(new Date());
         String dir = usb + "/BatteryWatchdog-export-" + stamp;
@@ -822,13 +869,24 @@ public class MainActivity extends Activity {
         err += writeToUsb("readings.csv", rd.toString(), dir);
         err += writeToUsb("drives.csv", dv.toString(), dir);
         err += writeToUsb("warnings.txt", wr.toString(), dir);
-        err += writeToUsb("diagnostics.txt", "Battery Watchdog export " + stamp + "\n\n" + buildDiagnostics(), dir);
+        String diag = "Battery Watchdog export " + stamp + "\n\n" + buildDiagnostics();
+        err += writeToUsb("diagnostics.txt", diag, dir);
+        // the same files as one zip, ready to attach to an issue
+        try {
+            Map<String, String> z = new java.util.LinkedHashMap<String, String>();
+            z.put("readings.csv", rd.toString()); z.put("drives.csv", dv.toString());
+            z.put("warnings.txt", wr.toString()); z.put("diagnostics.txt", diag);
+            for (Map.Entry<String, String> e : readState(STATE_FILES).entrySet()) z.put("raw/" + e.getKey(), e.getValue());
+            String zr = writeRootBytes(dir + ".zip", ShareZip.plain(z));
+            if (zr.length() > 0) err += "zip: " + zr + "\n";
+        } catch (Exception e) { err += "zip: " + e + "\n"; }
         runRoot("sync");
         String rawList = runRoot("ls " + shq(dir + "/raw") + " 2>&1").trim().replace("\n", " ");
         if (err.length() > 0) return "Some files couldn't be written to " + dir + ":\n" + err
             + "\nraw/ on the drive: " + (rawList.length() > 0 ? rawList : "(empty)");
         return "Exported " + rows + " readings and " + drives + " drives (written via " + lastWriteMethod + ") to\n" + dir
-            + "\n\nreadings.csv and drives.csv open in Excel or Google Sheets. raw/ has the original files.";
+            + "\n\nreadings.csv and drives.csv open in Excel or Google Sheets. raw/ has the original files. "
+            + "The .zip beside the folder has the same files, ready to attach to a \"Share battery data\" issue.";
     }
 
     String writeToUsb(String name, String content, String dir) {
@@ -872,11 +930,22 @@ public class MainActivity extends Activity {
      * Returns "" on success, otherwise what each attempt did. lastWriteMethod
      * records which one worked (shown in Diagnostics).
      */
-    String writeRoot(String path, String content) {
-        String q = shq(path);
+    /** Write bytes to a root-only path (stage then cat, or stdin); verified by size. */
+    String writeRootBytes(String path, byte[] bytes) {
         StringBuilder why = new StringBuilder();
-        byte[] bytes;
-        try { bytes = content.getBytes("UTF-8"); } catch (Exception e) { return e.toString(); }
+        String r = writeRootStaged(path, bytes, null, why);
+        if (r != null) return r;
+        lastWriteMethod = "failed";
+        return why.toString();
+    }
+
+    /**
+     * "" when written, null when every binary-safe way failed (reasons in why).
+     * text, when given, is the same content as a string: short files are then also
+     * checked by content if the size can't be read.
+     */
+    String writeRootStaged(String path, byte[] bytes, String text, StringBuilder why) {
+        String q = shq(path);
 
         // 1 + 2: stage a file, root copies it
         File[] stages = { stageDir(true), stageDir(false) };
@@ -891,7 +960,7 @@ public class MainActivity extends Activity {
                 tmp.setReadable(true, false);
                 dir.setExecutable(true, false);
                 String r = runRoot("cat " + shq(tmp.getAbsolutePath()) + " > " + q + " 2>&1").trim();
-                boolean ok = sameContent(path, content);
+                boolean ok = written(path, bytes, text);
                 tmp.delete();
                 if (ok) { lastWriteMethod = names[i]; return ""; }
                 why.append(names[i]).append(": ").append(r.length() > 0 ? r : "mismatch").append("; ");
@@ -908,9 +977,19 @@ public class MainActivity extends Activity {
             o.write(bytes);
             o.close();
             p.waitFor();
-            if (sameContent(path, content)) { lastWriteMethod = "stdin"; return ""; }
+            if (written(path, bytes, text)) { lastWriteMethod = "stdin"; return ""; }
             why.append("stdin: mismatch; ");
         } catch (Exception e) { why.append("stdin: ").append(e.getMessage()).append("; "); }
+        return null;
+    }
+
+    String writeRoot(String path, String content) {
+        String q = shq(path);
+        StringBuilder why = new StringBuilder();
+        byte[] bytes;
+        try { bytes = content.getBytes("UTF-8"); } catch (Exception e) { return e.toString(); }
+        String staged = writeRootStaged(path, bytes, content, why);
+        if (staged != null) return staged;
 
         // 4: small chunks, raw print (mksh's echo would interpret backslashes)
         runRoot(": > " + q);
@@ -927,6 +1006,10 @@ public class MainActivity extends Activity {
     }
 
     String lastWriteMethod = "";
+
+    boolean written(String path, byte[] bytes, String text) {
+        return text != null ? sameContent(path, text) : fileSize(path) == bytes.length;
+    }
 
     static String shq(String s) { return "'" + s.replace("'", "'\\''") + "'"; }
 

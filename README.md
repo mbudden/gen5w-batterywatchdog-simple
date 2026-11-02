@@ -40,7 +40,7 @@ helps just as much.
 - **HV battery health (SOH)** in a color-coded box (display only).
 - **History chart** of recent readings, with the start of each drive marked.
 - **Export to USB:** your readings, drives and warnings as spreadsheet-ready
-  CSV files.
+  CSV files, plus a zip ready to share (optionally with the dates hidden).
 - **Built-in diagnostics** for troubleshooting.
 
 It's an early-warning aid, not a battery tester: see
@@ -132,8 +132,16 @@ capacity measurement, and it never triggers warnings.
 ### Exporting your data
 
 Insert a USB drive (FAT32 or exFAT, ideally one **without** a `NEMESIS.data`
-file on it), then tap **Advanced → Export to USB**. It creates a folder like
-`BatteryWatchdog-export-2026-10-30_0815/` containing:
+file on it), then tap **Advanced → Export to USB** and choose:
+
+- **Export:** a folder like `BatteryWatchdog-export-2026-10-30_0815/`, and a
+  `.zip` of the same files beside it, ready to attach to an issue.
+- **For sharing, dates hidden:** only a zip, `BatteryWatchdog-share-xxxx.zip`,
+  with the battery log, drives and warnings. Every date is moved back by the
+  same random number of whole weeks (the time of day and day of week stay),
+  and neither the file name nor the zip itself shows the real date.
+
+The export folder contains:
 
 | File | Contents |
 |---|---|
@@ -158,19 +166,17 @@ always under **Advanced → Share data**. Nothing is ever sent from the car. If
 you're willing to help:
 
 1. Export to USB as above. A few weeks of driving is useful, a few months is
-   better.
-2. Zip the `BatteryWatchdog-export-...` folder.
-3. Open a [Share battery data](https://github.com/zpoon/gen5w-BatteryWatchdog/issues/new?template=data-submission.yml)
-   issue, fill in what you know about your 12V battery, and attach the zip.
-4. If your battery fails or gets replaced later, comment on the same issue.
+   better. Issues are public, so choose **For sharing, dates hidden** if you'd
+   rather not show when you drive.
+2. Open a [Share battery data](https://github.com/zpoon/gen5w-BatteryWatchdog/issues/new?template=data-submission.yml)
+   issue, fill in what you know about your 12V battery, and attach the zip
+   from the drive.
+3. If your battery fails or gets replaced later, comment on the same issue.
    That makes your log far more useful.
 
-Issues are public. To share without the real dates, run
-`python3 tools/analyze.py BatteryWatchdog-export-... --share data.zip` on a
-computer (Python 3, nothing to install) and attach `data.zip` instead. It
-keeps only the battery log, drives and warnings, moves every date back by the
-same random number of whole weeks (the time of day and day of week stay), and
-adds the app and firmware version.
+An export made before this version can be shared the same way with
+`python3 tools/analyze.py BatteryWatchdog-export-... --share data.zip`
+(Python 3, nothing to install), which makes the same dates-hidden zip.
 
 The same tool prints its own verdict on your data:
 `python3 tools/analyze.py BatteryWatchdog-export-...`. It's experimental, so
