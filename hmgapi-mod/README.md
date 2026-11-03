@@ -51,9 +51,10 @@ firmware list, no temperature hunting and no root plumbing.
 
 ## Open questions
 
-- **`"user": "app"`:** confirm it runs the service as the mod's app uid, so the
-  app can read its files without root. Otherwise use `system` and share state
-  another way.
+- **`"user": "app"`: answered.** HMG-API runs the service as the first app in
+  `"apps"` (`ModRuntime.java`: `app` → `app:<package>`). The service and the
+  app share one Android user, so the app reads the service's files directly,
+  with no root.
 - **Licensing:** HMG-API's client library (`hmgapi-client.jar`) is AGPL-3.0.
   Battery Watchdog is MIT, so the mod talks to HMG-API only through the
   `hmgapid` command (from the service and through a shell), not by bundling
