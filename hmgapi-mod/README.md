@@ -56,12 +56,26 @@ firmware list, no temperature hunting and no root plumbing.
          screen fallback (`dumpsys power`) work as the app's user
    - [ ] later: react to `hmgapi.intent.action.USB_FOLDER` (offer Export when a
          stick with the folder goes in), once writing is confirmed
-4. [ ] **Extras HMG-API makes possible:** tile icons in the car's style
-       (`tools/mkicon.sh`); a side-panel page with the 12V % in the split screen
-       (`"provides": {"panel": …}`).
+4. [x] **Extras HMG-API makes possible:**
+   - [x] app-menu tile in the car's own style: `icons/` (day, night and the two
+         greyed-out pictures), made with HMG-API's `tools/mkicon.sh` from the
+         battery glyph (`python3 tools/make_icon.py --glyph glyph.png`), listed
+         under `provides.launcher` in `mod.json`
+   - [x] split-screen panel page "12V battery" (`provides.panel`,
+         `PanelWidget`): the 12V %, main battery, outside temperature, the
+         parked drop before this drive and any warning, from the service's status
+         file. The service refreshes it after each reading; a tap opens the app.
+   - [x] the service passes HMG-API's install-time script check
+         (`tools/check-scripts.sh`); a few lines were reworded for its
+         line-by-line reading, with no change in behaviour
+   - [ ] check on the car: the tile pictures in the app menu (day and night),
+         and the page in the split-screen editor and panel
 5. [ ] **Upstream (HMG-API PR):** readings for the 12V battery sensor's flags
        (`getBATSNSRState`/`Invalid`/`Error`) and the Auxiliary Battery Saver option
        (`get_BAT_AuxBattOpt`). Until then, the NEMESIS version logs them.
+       Also worth reporting: `ScriptCheck` reads line by line, so it flags
+       backslash-continued lines, `a|b)` case patterns, a bare `-` pattern and
+       nested parentheses inside `$(( ))` as missing commands.
 6. [ ] **Package:** a mod-signing key (kept private and backed up), then
        `tools/mkmodpkg.sh` (HMG-API mod) and `tools/mknemesismod.sh` (NEMESIS
        package that installs it through HMG-API); CI for both; catalogue PR.

@@ -32,7 +32,7 @@ case "\$3" in
 *)   echo "Result: Parcel(00000000 00000000   '........')";;
 esac
 EOT
-    printf '#!/bin/sh\necho "$6" >> %s/toasts\n' "$T" > "$T/bin/am"
+    printf '#!/bin/sh\necho "$*" >> %s/am\ncase "$3" in *PANEL_REFRESH) exit 0;; esac\necho "$6" >> %s/toasts\n' "$T" "$T" > "$T/bin/am"
     printf '#!/bin/sh\ncase "$1" in power) cat %s/disp;; com.hkmc.micom.datc) cat %s/datc 2>/dev/null;; esac\n' "$T" "$T" > "$T/bin/dumpsys"
     printf '#!/bin/sh\ncat %s/fw\n' "$T" > "$T/bin/getprop"
     printf '#!/bin/sh\ncat %s/logcat 2>/dev/null\n' "$T" > "$T/bin/logcat"
@@ -62,6 +62,7 @@ grep -q '^hv10=705$' "$T/state/status" || fail "A: main battery SOC should be 70
 grep -q '^temp_c=12$' "$T/state/status" || fail "A: outside temp should be 12 C"
 grep -q '^parked_min=0$' "$T/state/status" || fail "A: parked minutes should be recorded"
 grep -q ',705,12,,,,,$' "$T/state/log.csv" || fail "A: log rows should carry hv10 and temp (extras empty on known firmware)"
+grep -q PANEL_REFRESH "$T/am" 2>/dev/null && fail "A: no panel refresh outside HMG-API"
 rm -rf "$T"; echo "  A known firmware: ok"
 
 # A2: hand-verified firmware (no lookup by name) never calls the extra getters
@@ -216,6 +217,7 @@ grep -q '^hv10=705$' "$T/state/status" || fail "HA1: main battery should be 70.5
 grep -q '^temp_c=12$' "$T/state/status" || fail "HA1: outside temp should be 12 C"
 [ "$(grep -c ',start,' "$T/state/log.csv")" -eq 2 ] || fail "HA1: expected 2 drives from hv.ready"
 grep -q ',start,83,830,96,705,12,,,,,$' "$T/state/log.csv" || fail "HA1: first row should be 83,830,96,705,12"
+grep -q 'PANEL_REFRESH -n com.nemesis.batterywatchdog/.PanelWidget' "$T/am" || fail "HA1: should refresh the panel page"
 rm -rf "$T"; echo "  HA1 HMG-API readings: ok"
 
 # HA2: no 12V reading from HMG-API (car not mapped) -> unverified, nothing logged

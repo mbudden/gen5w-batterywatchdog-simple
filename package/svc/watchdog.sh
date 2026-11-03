@@ -41,9 +41,14 @@ log() { echo "watchdog: $(date 2>/dev/null) $*"; }
 cfg() { _f="$STATE/$1"; _d="$2"; if [ -r "$_f" ]; then read -r _v < "$_f" 2>/dev/null; case "$_v" in ''|*[!0-9-]*) echo "$_d";; *) echo "$_v";; esac; else echo "$_d"; fi; }
 
 toast() {
-    am broadcast -a com.hkmc.intent.action.TOAST \
-        -e com.hkmc.intent.extra.TOAST_MESSAGE "$1" \
-        --ez com.hkmc.intent.extra.TOAST_POPUPSHOWING true >/dev/null 2>&1 || true
+    # one line each (no backslash continuations): HMG-API's install-time script check reads line by line
+    am broadcast -a com.hkmc.intent.action.TOAST -e com.hkmc.intent.extra.TOAST_MESSAGE "$1" --ez com.hkmc.intent.extra.TOAST_POPUPSHOWING true >/dev/null 2>&1 || true
+}
+
+# HMG-API: the split-screen panel page (PanelWidget) redraws from the status file
+panel_refresh() {
+    [ -n "$HMGAPI" ] || return 0
+    am broadcast -a com.nemesis.batterywatchdog.PANEL_REFRESH -n com.nemesis.batterywatchdog/.PanelWidget >/dev/null 2>&1 || true
 }
 
 # wall-clock seconds (keeps counting through suspend). If this date can't do
@@ -63,7 +68,7 @@ hex2dec() {
     while [ -n "$_h" ]; do
         _c=${_h%"${_h#?}"}; _h=${_h#?}
         case "$_c" in
-            [0-9]) _d=$_c;; a|A) _d=10;; b|B) _d=11;; c|C) _d=12;; d|D) _d=13;; e|E) _d=14;; f|F) _d=15;;
+            [0-9]) _d=$_c;; [aA]) _d=10;; [bB]) _d=11;; [cC]) _d=12;; [dD]) _d=13;; [eE]) _d=14;; [fF]) _d=15;;
             *) echo -1; return;;
         esac
         _r=$(( _r * 16 + _d ))
@@ -126,7 +131,7 @@ float10() {   # float bits (hex) -> value x10, or -1
     _e=$(( ((_b >> 23) & 255) - 127 ))
     [ "$_e" -lt -4 ] && { echo 0; return; }
     [ "$_e" -gt 22 ] && { echo -1; return; }
-    _m=$(( (_b & 8388607) | 8388608 ))
+    _m=$(( _b & 8388607 | 8388608 ))   # & binds tighter than |
     echo $(( (_m * 10) >> (23 - _e) ))
 }
 
@@ -202,11 +207,11 @@ temp_from_logcat() {
     lines_off
     if [ -n "$_eco" ]; then
         _c=${_eco#*\"outTemperature\":}; _c=${_c%%[!0-9-]*}
-        case "$_c" in ''|-|*[!0-9-]*) ;; *) if in_range_c "$_c"; then TEMP_C=$_c; TEMP_SRC=eco_log; return 0; fi;; esac
+        case "$_c" in ''|'-'|*[!0-9-]*) ;; *) if in_range_c "$_c"; then TEMP_C=$_c; TEMP_SRC=eco_log; return 0; fi;; esac
     fi
     if [ -n "$_ui" ]; then
         _f=${_ui#*temp = }; _f=${_f%% *}; _f=${_f%%.*}
-        case "$_f" in ''|-|*[!0-9-]*) ;; *) _c=$(( (_f - 32) * 5 / 9 )); if in_range_c "$_c"; then TEMP_C=$_c; TEMP_SRC=ui_log; return 0; fi;; esac
+        case "$_f" in ''|'-'|*[!0-9-]*) ;; *) _c=$(( (_f - 32) * 5 / 9 )); if in_range_c "$_c"; then TEMP_C=$_c; TEMP_SRC=ui_log; return 0; fi;; esac
     fi
     return 1
 }
@@ -252,7 +257,7 @@ tenths() {   # "70.5" / "83" -> 705 / 830; -1 if not a plain non-negative number
 }
 whole() {   # "-3.5" / "12" -> -3 / 12 (whole degrees, toward zero); nothing if not a number
     _v=${1%%.*}
-    case "$_v" in ''|-|*[!0-9-]*|?*-*) return;; esac
+    case "$_v" in ''|'-'|*[!0-9-]*|?*-*) return;; esac
     echo "$_v"
 }
 
@@ -406,6 +411,7 @@ session_start() {   # reason
         toast "12V battery $(fmt10 "$S_PCT10")%"
     fi
     write_status ok
+    panel_refresh
 }
 
 # ---- firmware / interface verification -----------------------------------------
@@ -541,7 +547,7 @@ while :; do
         sample
         append sample "$S_RAW" "$S_PCT10"
         LAST_SAMPLE=$T
-        if [ "$S_PCT10" -ge 0 ]; then put "$STATE/last" "$(now) $S_PCT10"; write_status ok; fi
+        if [ "$S_PCT10" -ge 0 ]; then put "$STATE/last" "$(now) $S_PCT10"; write_status ok; panel_refresh; fi
     fi
 
     [ "$DISP" != "$PREV_DISP" ] && log "display $PREV_DISP -> $DISP"
