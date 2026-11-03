@@ -34,7 +34,7 @@ firmware list, no temperature hunting and no root plumbing.
    - [x] keeps state in `$HMGAPI_DATA`; output goes to HMG-API's service log
    - [x] writes the same `log.csv` columns (`outside_temp` rounded toward zero
          to whole °C), so `tools/analyze.py`, export and share zips keep working
-   - [x] tests H1–H4 in `tests/test_service.sh` with a mocked `hmgapid`
+   - [x] tests HA1–HA4 in `tests/test_service.sh` with a mocked `hmgapid`
    - [ ] check on the car: `hv.ready` is 1 while the car is on (READY), and
          `battery12v.soc` matches the NEMESIS version's reading
 3. [ ] **App** (same APK, two modes):
