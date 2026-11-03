@@ -29,6 +29,10 @@ H=$(cd "$H" && pwd)
 case $KEY in /*) ;; *) KEY=$PWD/$KEY ;; esac
 [ -f "$H/tools/mkmodpkg.sh" ] || { echo "no HMG-API checkout at $H"; exit 1; }
 [ -f "$KEY" ] || { echo "no key at $KEY"; exit 1; }
+# the public half lives in the repo (hmgapi-mod/mod-key.pub): HMG-API's signer
+# reads <key>.pub, and every package must come out with the mod's one UUID
+[ -f "$KEY.pub" ] || cp "$ROOT/hmgapi-mod/mod-key.pub" "$KEY.pub"
+cmp -s "$KEY.pub" "$ROOT/hmgapi-mod/mod-key.pub" || { echo "$KEY.pub isn't hmgapi-mod/mod-key.pub: wrong key?"; exit 1; }
 APK=$ROOT/app/batterywatchdog.apk
 [ -f "$APK" ] || { echo "no $APK: run tools/build_apk.sh first"; exit 1; }
 
@@ -63,5 +67,10 @@ Z=$( cd "$H" && sh tools/mkmodpkg.sh "$M" "$KEY" | tail -n 1 )
 mkdir -p "$ROOT/dist"
 cp "$Z" "$ROOT/dist/"
 ( cd "$H" && sh tools/mknemesismod.sh "$Z" "$ROOT/dist" )
-echo "mod uuid: $(cd "$H" && java -cp out/engine-host hmgapi.engine.Signing uuid "$KEY" 2>/dev/null)"
+# the signed package must verify as this mod's UUID (a wrong private key fails here)
+UUID=49624245-2eef-8b12-b385-823361d61309
+V1=$(mktemp -d); unzip -q "$Z" -d "$V1"
+( cd "$H" && java -cp out/engine-host hmgapi.engine.Signing verify "$V1" "$UUID" ) || { rm -rf "$V1"; echo "package doesn't verify as $UUID"; exit 1; }
+rm -rf "$V1"
+echo "mod uuid: $UUID"
 ls -l "$ROOT/dist/"*battery-watchdog-"$V"*

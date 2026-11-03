@@ -107,7 +107,7 @@ jobs:
           umask 077
           printf '%s\n' "$MOD_KEY" > "$RUNNER_TEMP/mod.key"
           tools/make_hmgapi_mod.sh hmgapi-tools "$RUNNER_TEMP/mod.key"
-          rm -f "$RUNNER_TEMP/mod.key"
+          rm -f "$RUNNER_TEMP/mod.key" "$RUNNER_TEMP/mod.key.pub"
 
       - name: Bundle the probe for USB
         run: (cd research/probe-12v && zip -X ../../dist/probe-12v-USB.zip NEMESIS.data NEMESIS.sh)
