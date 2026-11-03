@@ -136,6 +136,27 @@ KitKat's toolbox:
 CI fetches Debian's 2013 build of mksh R43 and runs `tests/test_service.sh`
 under it, plus `sh` and a current mksh.
 
+## Extra getters (logged raw)
+
+Besides the 12V reading, the service logs five more read-only getters from the
+same telematics interface, **only when the app found their numbers by name on
+this firmware**. Not from `known_firmware.txt` or a manual override, so a
+number from another build is never called. The values are logged as returned
+(the reply's first word, as a number), because what they mean isn't settled
+yet.
+
+| Column | Getter | Expected use |
+|---|---|---|
+| `sns_state` | `getBATSNSRState` | the 12V battery sensor's state (recalibrating, settling) |
+| `sns_invalid` | `getBATSNSRInvalid` | the 12V reading isn't valid now: skip it, or explain a sudden jump |
+| `sns_error` | `getBATSNSRError` | the sensor reports a fault: the 12V reading can't be trusted |
+| `aux_opt` | `get_BAT_AuxBattOpt` | Auxiliary Battery Saver+ setting: whether recharges while parked can happen |
+| `chg_status` | `getChargingStatus` | main battery charging: the 12V is kept up while plugged in |
+
+The app saves these numbers in `txn` next to `soc`/`hv`/`soh` (with `ext=1`
+once looked up). A `txn` saved by an older version is looked up again once.
+Diagnostics shows them on the "logged too (by name)" line.
+
 ## Storage writes
 
 Writes happen only at a sample (every `interval_s` while the display is on)
@@ -157,7 +178,7 @@ State and settings: `/data/nemesis/state/battery.watchdog/`
 
 | file | contents |
 |---|---|
-| `log.csv` | `epoch,event,raw_hex,pct10,soh_raw,hv10,temp_c` (`event` = `start`/`sample`). Rotates to `log.old.csv` at `max_lines` (4000). **Advanced → Export to USB** converts it to `readings.csv` and `drives.csv` |
+| `log.csv` | `epoch,event,raw_hex,pct10,soh_raw,hv10,temp_c,sns_state,sns_invalid,sns_error,aux_opt,chg_status` (`event` = `start`/`sample`). The last five are raw (see "Extra getters"), empty when not looked up. Older lines have only the first seven. Rotates to `log.old.csv` at `max_lines` (4000). **Advanced → Export to USB** converts it to `readings.csv` and `drives.csv` |
 | `sessions` | one line per finished drive: `start_epoch minutes start_pct10 end_pct10` |
 | `warnings` | every warning raised, timestamped |
 | `status` | latest state, read by the app |

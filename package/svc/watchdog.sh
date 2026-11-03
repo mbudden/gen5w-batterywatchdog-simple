@@ -225,11 +225,20 @@ sample() {   # sets S_RAW, S_PCT10 (-1 if invalid)
         _h=$(float10 "$RAW")
         if [ "$_h" -ge 0 ] && [ "$_h" -le 1000 ]; then HV10=$_h; fi
     fi
+    # 12V battery sensor flags and context, logged raw (meaning not settled yet);
+    # only called when their numbers were resolved by name for this firmware
+    X_SNS_STATE=$(xread "$TX_SNS_STATE"); X_SNS_INVALID=$(xread "$TX_SNS_INVALID")
+    X_SNS_ERROR=$(xread "$TX_SNS_ERROR"); X_AUX=$(xread "$TX_AUX"); X_CHG=$(xread "$TX_CHG")
     read_temp
 }
 
+xread() {   # txn -> the reply's first word as a number, or nothing (no txn / call failed)
+    [ -n "$1" ] || return 0
+    call_word "$1" && hex2dec "$RAW"
+}
+
 append() {   # event raw pct10
-    echo "$(now),$1,$2,$3,$SOH_RAW,$HV10,$TEMP_C" >> "$LOG"
+    echo "$(now),$1,$2,$3,$SOH_RAW,$HV10,$TEMP_C,$X_SNS_STATE,$X_SNS_INVALID,$X_SNS_ERROR,$X_AUX,$X_CHG" >> "$LOG"
     LINES=$((LINES + 1))
     if [ "$LINES" -ge "$MAX_LINES" ]; then mv "$LOG" "$STATE/log.old.csv" 2>/dev/null; LINES=0; put "$STATE/lines" 0
     elif [ $((LINES % 50)) -eq 0 ]; then put "$STATE/lines" "$LINES"; fi   # save the count only now and then
@@ -363,18 +372,26 @@ isnum() { case "$1" in ''|*[!0-9]*) return 1;; esac; [ "$1" -gt 0 ] && [ "$1" -l
 
 verify() {
     VERIFIED=0; TX_SOC=""; TX_SOH=""; TX_HVSOC=""
+    TX_SNS_STATE=""; TX_SNS_INVALID=""; TX_SNS_ERROR=""; TX_AUX=""; TX_CHG=""
     if ! service list 2>/dev/null | grep "$SVC" | grep -q "$HSCAN_IFACE"; then
         VERIFY_WHY=interface_mismatch; return
     fi
     if [ -r "$STATE/txn" ]; then
-        _fw=""; _soc=""; _hv=""; _soh=""
+        _fw=""; _soc=""; _hv=""; _soh=""; _ss=""; _si=""; _se=""; _ax=""; _cs=""; _src=""
         while IFS='=' read -r _k _v; do
-            case "$_k" in fw) _fw=$_v;; soc) _soc=$_v;; hv) _hv=$_v;; soh) _soh=$_v;; esac
+            case "$_k" in fw) _fw=$_v;; soc) _soc=$_v;; hv) _hv=$_v;; soh) _soh=$_v;;
+                sns_state) _ss=$_v;; sns_invalid) _si=$_v;; sns_error) _se=$_v;;
+                aux_opt) _ax=$_v;; chg_status) _cs=$_v;; source) _src=$_v;; esac
         done < "$STATE/txn"
         if [ -n "$FW" ] && [ "$_fw" = "$FW" ] && isnum "$_soc"; then
             TX_SOC=$_soc
             isnum "$_hv" && TX_HVSOC=$_hv
             isnum "$_soh" && TX_SOH=$_soh
+            # the extra getters only ever come from a lookup by name, never an override
+            if [ "$_src" != manual-override ]; then
+                isnum "$_ss" && TX_SNS_STATE=$_ss; isnum "$_si" && TX_SNS_INVALID=$_si
+                isnum "$_se" && TX_SNS_ERROR=$_se; isnum "$_ax" && TX_AUX=$_ax; isnum "$_cs" && TX_CHG=$_cs
+            fi
             VERIFIED=1; VERIFY_WHY=resolved_by_name; return
         fi
     fi
@@ -406,7 +423,7 @@ done
 [ "$i" -ge 120 ] && log "$SVC not registered after 120s; continuing anyway"
 
 verify
-log "firmware=$FW verify=$VERIFY_WHY soc=$TX_SOC hv=$TX_HVSOC soh=$TX_SOH"
+log "firmware=$FW verify=$VERIFY_WHY soc=$TX_SOC hv=$TX_HVSOC soh=$TX_SOH sensor=$TX_SNS_STATE/$TX_SNS_INVALID/$TX_SNS_ERROR aux=$TX_AUX chg=$TX_CHG"
 
 DISP=$(display_state)
 PREV_DISP=$DISP
