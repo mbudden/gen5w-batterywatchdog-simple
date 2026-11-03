@@ -71,8 +71,8 @@ firmware list, no temperature hunting and no root plumbing.
          the check itself)
    - [ ] check on the car: the tile pictures in the app menu (day and night),
          and the page in the split-screen editor and panel
-5. [ ] **Upstream (HMG-API PR):** branch `battery12v-sensor-readings`, waiting
-       for a fork to open the PR from.
+5. [ ] **Upstream (HMG-API PR):** branch `battery12v-sensor-readings` on
+       zpoon/HMG-API, for a PR to VysseCodes/HMG-API.
    - [x] readings `battery12v.sensor_state`, `battery12v.sensor_invalid`,
          `battery12v.sensor_error` (`getBATSNSRState`/`Invalid`/`Error`) and
          `battery12v.saver` (`get_BAT_AuxBattOpt`), raw; hook points in the
