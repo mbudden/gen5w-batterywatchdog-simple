@@ -88,9 +88,24 @@ firmware list, no temperature hunting and no root plumbing.
          same `getChargingStatus` number).
    - [ ] after the PR is in an HMG-API release: add the four names to
          `"vehicle": {"read": …}` in `mod.json`
-6. [ ] **Package:** a mod-signing key (kept private and backed up), then
-       `tools/mkmodpkg.sh` (HMG-API mod) and `tools/mknemesismod.sh` (NEMESIS
-       package that installs it through HMG-API); CI for both; catalogue PR.
+6. [ ] **Package:** `tools/make_hmgapi_mod.sh <HMG-API checkout> <key>` stages
+       the mod (mod.json with the version stamped, `svc/watchdog.sh`, the APK,
+       icons, LICENSE), checks its scripts, signs it with HMG-API's
+       `tools/mkmodpkg.sh` and wraps it with `tools/mknemesismod.sh`:
+       `dist/battery-watchdog-<v>.zip` (the mod),
+       `battery-watchdog-<v>-nemesis.zip` (USB stick) and
+       `battery-watchdog-<v>-nemesis-package.zip` (NEMESIS package
+       `hmgapi.battery-watchdog`, needs HMG-API). Test builds are
+       `<VERSION>-beta.<run>`, which NEMESIS sorts below the release.
+   - [x] mod-signing key made (mod UUID `49624245-2eef-8b12-b385-823361d61309`);
+         kept by the maintainer, backed up, in the `HMGAPI_MOD_KEY` secret
+   - [x] CI builds the mod with HMG-API's tools pinned to a commit; skipped
+         (with a notice) without the secret. Not attached to releases yet.
+   - [ ] catalogue PR (`tools/catalog.py add` in HMG-API) to be listed as a trusted author
+   - [ ] the NEMESIS Battery Watchdog (`battery.watchdog`) and this mod must not
+         both be installed: both install the same app. Remove the NEMESIS one
+         first. Its history stays in `/data/nemesis/state/battery.watchdog`
+         (Export to USB first to keep a copy); it isn't moved over yet.
 7. [ ] **Test** on a car with HMG-API (the maintainer's Ioniq 5 US 260507, which
        HMG-API lists as "waiting for a check on a car").
 
