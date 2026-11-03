@@ -20,17 +20,23 @@ firmware list, no temperature hunting and no root plumbing.
 ## Porting checklist
 
 1. [x] Draft `mod.json` (`tools/mod-draft.py package --out …`).
-2. [ ] **Service** (`svc/watchdog.sh`, a copy adapted for HMG-API; the NEMESIS
-       one stays):
-   - [ ] reads: `hmgapid vehicle battery12v.soc hv.soc hv.health charging outside_temp`
-         instead of `service call tm_hscan_service …`
-   - [ ] remove `verify()`, `known_firmware.txt`, `read_temp` and the climate dump
-         and logcat parsing (HMG-API's map and `outside_temp` replace them)
-   - [ ] drive detection: `hv.ready` (car on) instead of `dumpsys power`. Keep
-         the screen check as a fallback until HMG-API offers a screen-on event.
-   - [ ] state in `$HMGAPI_DATA`; output already goes to HMG-API's service log
-   - [ ] same `log.csv` format, so `tools/analyze.py`, export and share zips
-         keep working
+2. [x] **Service:** one shared `package/svc/watchdog.sh` with an HMG-API mode
+       (on when `$HMGAPI_MOD` is set and `hmgapid` is on the PATH; the mod
+       package copies it to `svc/watchdog.sh`). In that mode it:
+   - [x] reads `hmgapid vehicle battery12v.soc hv.soc hv.health hv.ready charging outside_temp`
+         (one call per sample) instead of `service call tm_hscan_service …`
+   - [x] skips the firmware check, `known_firmware.txt`, the telematics-service
+         wait and the temperature hunting; it counts as verified once
+         `battery12v.soc` gives a number (`verify=hmgapi`), otherwise it stays
+         unverified (`hmgapi_no_reading`) and retries every minute
+   - [x] detects drives by `hv.ready` (car on); when HMG-API doesn't know it,
+         falls back to the screen check
+   - [x] keeps state in `$HMGAPI_DATA`; output goes to HMG-API's service log
+   - [x] writes the same `log.csv` columns (`outside_temp` rounded toward zero
+         to whole °C), so `tools/analyze.py`, export and share zips keep working
+   - [x] tests H1–H4 in `tests/test_service.sh` with a mocked `hmgapid`
+   - [ ] check on the car: `hv.ready` is 1 while the car is on (READY), and
+         `battery12v.soc` matches the NEMESIS version's reading
 3. [ ] **App** (same APK, two modes):
    - [ ] detect HMG-API (`hmgapid whoami`) and read state from `$HMGAPI_DATA`
          instead of through NEMESIS root

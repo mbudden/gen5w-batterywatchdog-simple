@@ -155,4 +155,62 @@ T=$(mktemp -d); setup "$T"; printf '  mOutTempC = 4\n' > "$T/datc"; run "$T" 3
 ls -a "$T/state" | grep -E '\.tmp$|^\.datc|^\.temp' && fail "M: temp files left in the state dir"
 rm -rf "$T"; echo "  M no temp files: ok"
 
+# ---- HMG-API mode (hmgapi-mod/): readings by name through a mocked hmgapid ----
+# hm_setup <dir>: mock hmgapid answering from one file per reading ("-" = unknown)
+hm_setup() {
+    setup "$1"
+    mkdir -p "$1/hm"
+    cat > "$1/bin/hmgapid" <<EOT
+#!/bin/sh
+[ "\$1" = vehicle ] || exit 2
+shift
+for n; do v=\$(cat "$1/hm/\$n" 2>/dev/null); echo "\$n \${v:--}"; done
+EOT
+    chmod +x "$1/bin/hmgapid"
+    echo 83 > "$1/hm/battery12v.soc"; echo 70.5 > "$1/hm/hv.soc"; echo 96 > "$1/hm/hv.health"
+    echo 1 > "$1/hm/hv.ready"; echo 0 > "$1/hm/charging"; echo 12.5 > "$1/hm/outside_temp"
+    : > "$1/logcat"
+}
+hm_run() {   # hm_run <dir> <loops>: data dir from HMG-API, no BWD_STATE
+    HMGAPI_MOD=battery-watchdog HMGAPI_DATA="$1/state" BWD_TEST_PATH="$1/bin" BWD_TEST=1 BWD_TEST_LOOPS=$2 "$SH" "$ROOT/package/svc/watchdog.sh" > "$1/out" 2>&1
+}
+
+# H1: readings by name, no binder calls, same log format; car off/on = two drives
+T=$(mktemp -d); hm_setup "$T"; echo eng.other.20990101.000000 > "$T/fw"
+( sleep 4; echo 0 > "$T/hm/hv.ready"; sleep 3; echo 64 > "$T/hm/battery12v.soc"; echo 1 > "$T/hm/hv.ready" ) &
+hm_run "$T" 12; wait
+grep -q '^state=ok' "$T/state/status" || fail "H1: status not ok"
+grep -q '^verify=hmgapi$' "$T/state/status" || fail "H1: reason should be hmgapi"
+[ ! -s "$T/calls" ] || fail "H1: made service calls under HMG-API: $(tr '\n' ' ' < "$T/calls")"
+grep -q '^pct10=640' "$T/state/status" || fail "H1: last reading should be 64.0%"
+grep -q '^hv10=705$' "$T/state/status" || fail "H1: main battery should be 70.5%"
+grep -q '^temp_c=12$' "$T/state/status" || fail "H1: outside temp should be 12 C"
+[ "$(grep -c ',start,' "$T/state/log.csv")" -eq 2 ] || fail "H1: expected 2 drives from hv.ready"
+grep -q ',start,83,830,96,705,12$' "$T/state/log.csv" || fail "H1: first row should be 83,830,96,705,12"
+rm -rf "$T"; echo "  H1 HMG-API readings: ok"
+
+# H2: no 12V reading from HMG-API (car not mapped) -> unverified, nothing logged
+T=$(mktemp -d); hm_setup "$T"; rm "$T/hm/battery12v.soc"
+hm_run "$T" 3
+grep -q '^state=unverified' "$T/state/status" || fail "H2: should be unverified"
+grep -q '^verify=hmgapi_no_reading$' "$T/state/status" || fail "H2: reason should be hmgapi_no_reading"
+[ ! -s "$T/state/log.csv" ] || fail "H2: logged readings without a 12V value"
+rm -rf "$T"; echo "  H2 no reading: unverified"
+
+# H3: decimals, negative temperature, unknown extras
+T=$(mktemp -d); hm_setup "$T"; echo 77.25 > "$T/hm/battery12v.soc"; echo -3.5 > "$T/hm/outside_temp"
+rm "$T/hm/hv.soc" "$T/hm/hv.health"
+hm_run "$T" 3
+grep -q '^pct10=772$' "$T/state/status" || fail "H3: 77.25 should be 772"
+grep -q '^temp_c=-3$' "$T/state/status" || fail "H3: -3.5 C should be -3"
+grep -q ',start,77.25,772,,,-3$' "$T/state/log.csv" || fail "H3: unknown readings should be empty columns"
+rm -rf "$T"; echo "  H3 decimals and unknowns: ok"
+
+# H4: hv.ready unknown -> falls back to the screen state
+T=$(mktemp -d); hm_setup "$T"; rm "$T/hm/hv.ready"
+( sleep 4; echo "mWakefulness=Asleep" > "$T/disp"; sleep 3; echo "mWakefulness=Awake" > "$T/disp" ) &
+hm_run "$T" 12; wait
+[ "$(grep -c ',start,' "$T/state/log.csv")" -eq 2 ] || fail "H4: screen fallback should give 2 drives"
+rm -rf "$T"; echo "  H4 screen fallback: ok"
+
 echo "PASS ($SH)"

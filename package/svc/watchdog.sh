@@ -14,13 +14,22 @@
 #
 # stdout is captured by NEMESIS:  nemesis log service battery.watchdog/watch
 # Config: one-value files in $STATE (written by the app / post.sh).
+#
+# Under HMG-API (the mod in hmgapi-mod/: $HMGAPI_MOD set, hmgapid present) the
+# same script reads the car through HMG-API's named readings instead
+# (`hmgapid vehicle battery12v.soc hv.soc ...`): no transaction numbers, no
+# firmware list, no temperature hunting, and "car on" (hv.ready) marks drives.
+# State lives in $HMGAPI_DATA; output goes to HMG-API's service log.
 export PATH=/data/nemesis/bin:/sbin:/vendor/bin:/system/sbin:/system/bin:/system/xbin:$PATH
 export LD_LIBRARY_PATH=/vendor/lib:/system/lib
 [ -n "$BWD_TEST_PATH" ] && PATH=$BWD_TEST_PATH:$PATH   # desktop tests only (mock service/am/dumpsys)
 
 VERSION=0.5.0   # stamped at build time by tools/make_package.sh (see VERSION)
 TAG=battery.watchdog
-STATE=${BWD_STATE:-/data/nemesis/state/$TAG}
+HMGAPI=""
+[ -n "$HMGAPI_MOD" ] && command -v hmgapid >/dev/null 2>&1 && HMGAPI=1
+if [ -n "$HMGAPI" ]; then STATE=${BWD_STATE:-${HMGAPI_DATA:-/data/hmgapi/data/$HMGAPI_MOD}}
+else STATE=${BWD_STATE:-/data/nemesis/state/$TAG}; fi
 SVC=tm_hscan_service
 # Transaction numbers are NOT hard-wired: see verify() below.
 TX_SOC=""; TX_SOH=""; TX_HVSOC=""
@@ -79,6 +88,10 @@ lines_off() { IFS=$_oifs; set +f; }
 DUMPSYS=/system/bin/dumpsys
 [ -n "$BWD_TEST_PATH" ] && DUMPSYS=dumpsys
 display_state() {
+    if [ -n "$HMGAPI" ]; then
+        # car on (READY) is what charges the 12V; fall back to the screen if unknown
+        case "$(hm_one hv.ready)" in 1) echo on; return ;; 0) echo off; return ;; esac
+    fi
     _p=$($DUMPSYS power 2>/dev/null)
     case "$_p" in
         *'mDisplayPowerRequest=policy=OFF'*|*'mDisplayPowerRequest=policy=0'*) echo off; return ;;
@@ -211,9 +224,52 @@ read_temp() {
     TEMP_C=""; TEMP_SRC=""
 }
 
+# ---- HMG-API readings --------------------------------------------------------
+# `hmgapid vehicle a b ...` prints "<name> <value>" pairs; "-" = not known (yet).
+HM_NAMES="battery12v.soc hv.soc hv.health hv.ready charging outside_temp"
+hm_read() {   # sets HM_SOC HM_HV HM_SOH HM_READY HM_CHG HM_TEMP (empty = unknown)
+    HM_SOC=""; HM_HV=""; HM_SOH=""; HM_READY=""; HM_CHG=""; HM_TEMP=""
+    set -- $(hmgapid vehicle $HM_NAMES 2>/dev/null)
+    while [ $# -ge 2 ]; do
+        _v=$2; [ "$_v" = - ] && _v=""
+        case "$1" in
+            battery12v.soc) HM_SOC=$_v;; hv.soc) HM_HV=$_v;; hv.health) HM_SOH=$_v;;
+            hv.ready) HM_READY=$_v;; charging) HM_CHG=$_v;; outside_temp) HM_TEMP=$_v;;
+        esac
+        shift 2
+    done
+}
+hm_one() {   # one reading's value, or nothing
+    set -- $(hmgapid vehicle "$1" 2>/dev/null)
+    [ $# -ge 2 ] && [ "$2" != - ] && echo "$2"
+}
+tenths() {   # "70.5" / "83" -> 705 / 830; -1 if not a plain non-negative number
+    _v=$1
+    case "$_v" in ''|.*|*.*.*|*[!0-9.]*) echo -1; return;; esac
+    _i=${_v%%.*}; _f=0
+    case "$_v" in *.*) _f=${_v#*.}; _f=${_f%"${_f#?}"}; [ -n "$_f" ] || _f=0;; esac
+    echo $(( _i * 10 + _f ))
+}
+whole() {   # "-3.5" / "12" -> -3 / 12 (whole degrees, toward zero); nothing if not a number
+    _v=${1%%.*}
+    case "$_v" in ''|-|*[!0-9-]*|?*-*) return;; esac
+    echo "$_v"
+}
+
 SOH_RAW=""; HV10=""; TEMP_C=""
 sample() {   # sets S_RAW, S_PCT10 (-1 if invalid)
     S_RAW=""; S_PCT10=-1
+    if [ -n "$HMGAPI" ]; then
+        hm_read
+        S_RAW=$HM_SOC; S_PCT10=$(tenths "$HM_SOC")
+        [ "$S_PCT10" -le 1000 ] || S_PCT10=-1
+        _h=$(tenths "$HM_HV"); if [ "$_h" -ge 0 ] && [ "$_h" -le 1000 ]; then HV10=$_h; fi
+        case "$HM_SOH" in ''|*[!0-9]*) ;; *) SOH_RAW=$HM_SOH;; esac
+        _t=$(whole "$HM_TEMP")
+        if [ -n "$_t" ] && in_range_c "$_t"; then TEMP_C=$_t; TEMP_SRC=hmgapi; TEMP_T=$(now)
+        elif [ -n "$TEMP_C" ] && [ $(( $(now) - TEMP_T )) -gt 1800 ]; then TEMP_C=""; TEMP_SRC=""; fi
+        return
+    fi
     _try=0
     while [ "$_try" -lt 5 ]; do
         [ -n "$TX_SOC" ] || break
@@ -363,6 +419,12 @@ isnum() { case "$1" in ''|*[!0-9]*) return 1;; esac; [ "$1" -gt 0 ] && [ "$1" -l
 
 verify() {
     VERIFIED=0; TX_SOC=""; TX_SOH=""; TX_HVSOC=""
+    if [ -n "$HMGAPI" ]; then
+        # HMG-API's map for this car resolves the readings; no numbers here
+        hm_read
+        if [ "$(tenths "$HM_SOC")" -ge 0 ]; then VERIFIED=1; VERIFY_WHY=hmgapi; else VERIFY_WHY=hmgapi_no_reading; fi
+        return
+    fi
     if ! service list 2>/dev/null | grep "$SVC" | grep -q "$HSCAN_IFACE"; then
         VERIFY_WHY=interface_mismatch; return
     fi
@@ -399,11 +461,12 @@ log "v$VERSION start; enabled=$ENABLED interval=${INTERVAL}s poll=${POLL}s gap=$
 
 # wait (bounded) for the telematics service
 i=0
+[ -n "$HMGAPI" ] && i=120 && log "HMG-API mod $HMGAPI_MOD; state in $STATE"
 while [ "$i" -lt 120 ]; do
     service check "$SVC" 2>/dev/null | grep -q found && break
     sleep 2; i=$((i + 2))
 done
-[ "$i" -ge 120 ] && log "$SVC not registered after 120s; continuing anyway"
+[ "$i" -ge 120 ] && [ -z "$HMGAPI" ] && log "$SVC not registered after 120s; continuing anyway"
 
 verify
 log "firmware=$FW verify=$VERIFY_WHY soc=$TX_SOC hv=$TX_HVSOC soh=$TX_SOH"
