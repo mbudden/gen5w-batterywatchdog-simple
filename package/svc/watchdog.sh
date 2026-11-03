@@ -232,14 +232,22 @@ read_temp() {
 # ---- HMG-API readings --------------------------------------------------------
 # `hmgapid vehicle a b ...` prints "<name> <value>" pairs; "-" = not known (yet).
 HM_NAMES="battery12v.soc hv.soc hv.health hv.ready charging outside_temp"
-hm_read() {   # sets HM_SOC HM_HV HM_SOH HM_READY HM_CHG HM_TEMP (empty = unknown)
+# The 12V sensor's flags and the saver option (columns 8-11) come from HMG-API
+# releases that have these readings; HMG-API refuses a mod that asks for a reading
+# it doesn't know, so they're read only once mod.json lists them.
+HM_EXTRAS="battery12v.sensor_state battery12v.sensor_invalid battery12v.sensor_error battery12v.saver"
+[ -n "$HMGAPI" ] && grep -q '"battery12v.saver"' "${HMGAPI_MOD_DIR:-/nonexistent}/mod.json" 2>/dev/null && HM_NAMES="$HM_NAMES $HM_EXTRAS"
+hm_read() {   # sets HM_SOC HM_HV HM_SOH HM_READY HM_CHG HM_TEMP HM_SNS_* HM_SAVER (empty = unknown)
     HM_SOC=""; HM_HV=""; HM_SOH=""; HM_READY=""; HM_CHG=""; HM_TEMP=""
+    HM_SNS_STATE=""; HM_SNS_INVALID=""; HM_SNS_ERROR=""; HM_SAVER=""
     set -- $(hmgapid vehicle $HM_NAMES 2>/dev/null)
     while [ $# -ge 2 ]; do
         _v=$2; [ "$_v" = - ] && _v=""
         case "$1" in
             battery12v.soc) HM_SOC=$_v;; hv.soc) HM_HV=$_v;; hv.health) HM_SOH=$_v;;
             hv.ready) HM_READY=$_v;; charging) HM_CHG=$_v;; outside_temp) HM_TEMP=$_v;;
+            battery12v.sensor_state) HM_SNS_STATE=$_v;; battery12v.sensor_invalid) HM_SNS_INVALID=$_v;;
+            battery12v.sensor_error) HM_SNS_ERROR=$_v;; battery12v.saver) HM_SAVER=$_v;;
         esac
         shift 2
     done
@@ -254,6 +262,10 @@ tenths() {   # "70.5" / "83" -> 705 / 830; -1 if not a plain non-negative number
     _i=${_v%%.*}; _f=0
     case "$_v" in *.*) _f=${_v#*.}; _f=${_f%"${_f#?}"}; [ -n "$_f" ] || _f=0;; esac
     echo $(( _i * 10 + _f ))
+}
+rawnum() {   # a whole number (sign allowed) as given, or nothing
+    case "$1" in ''|'-'|*[!0-9-]*|?*-*) return;; esac
+    echo "$1"
 }
 whole() {   # "-3.5" / "12" -> -3 / 12 (whole degrees, toward zero); nothing if not a number
     _v=${1%%.*}
@@ -273,8 +285,10 @@ sample() {   # sets S_RAW, S_PCT10 (-1 if invalid)
         _t=$(whole "$HM_TEMP")
         if [ -n "$_t" ] && in_range_c "$_t"; then TEMP_C=$_t; TEMP_SRC=hmgapi; TEMP_T=$(now)
         elif [ -n "$TEMP_C" ] && [ $(( $(now) - TEMP_T )) -gt 1800 ]; then TEMP_C=""; TEMP_SRC=""; fi
-        # no HMG-API readings for the sensor flags yet; columns 8-12 stay empty
-        X_SNS_STATE=""; X_SNS_INVALID=""; X_SNS_ERROR=""; X_AUX=""; X_CHG=""
+        # columns 8-12, raw: the sensor flags and saver option when mod.json asks for
+        # them (empty otherwise); charging is the same getChargingStatus number
+        X_SNS_STATE=$(rawnum "$HM_SNS_STATE"); X_SNS_INVALID=$(rawnum "$HM_SNS_INVALID")
+        X_SNS_ERROR=$(rawnum "$HM_SNS_ERROR"); X_AUX=$(rawnum "$HM_SAVER"); X_CHG=$(rawnum "$HM_CHG")
         return
     fi
     _try=0

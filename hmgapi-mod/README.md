@@ -67,15 +67,27 @@ firmware list, no temperature hunting and no root plumbing.
          file. The service refreshes it after each reading; a tap opens the app.
    - [x] the service passes HMG-API's install-time script check
          (`tools/check-scripts.sh`); a few lines were reworded for its
-         line-by-line reading, with no change in behaviour
+         line-by-line reading, with no change in behaviour (step 5 also fixes
+         the check itself)
    - [ ] check on the car: the tile pictures in the app menu (day and night),
          and the page in the split-screen editor and panel
-5. [ ] **Upstream (HMG-API PR):** readings for the 12V battery sensor's flags
-       (`getBATSNSRState`/`Invalid`/`Error`) and the Auxiliary Battery Saver option
-       (`get_BAT_AuxBattOpt`). Until then, the NEMESIS version logs them.
-       Also worth reporting: `ScriptCheck` reads line by line, so it flags
-       backslash-continued lines, `a|b)` case patterns, a bare `-` pattern and
-       nested parentheses inside `$(( ))` as missing commands.
+5. [ ] **Upstream (HMG-API PR):** branch `battery12v-sensor-readings`, waiting
+       for a fork to open the PR from.
+   - [x] readings `battery12v.sensor_state`, `battery12v.sensor_invalid`,
+         `battery12v.sensor_error` (`getBATSNSRState`/`Invalid`/`Error`) and
+         `battery12v.saver` (`get_BAT_AuxBattOpt`), raw; hook points in the
+         catalogue, listed as missing in every car's map until VysseCodes maps them
+         from stock files (`tools/map-car.py`) or an owner runs `engine map-car`
+         on the car
+   - [x] script check: continued lines, `a|b)` case patterns and nested
+         parentheses in `$(( ))` no longer show as missing commands; new test
+         `core/runtime/scriptcheck-test.sh`
+   - [x] the service reads the flags once `mod.json` lists them (columns 8–11);
+         until an HMG-API release has them, `mod.json` must not list them, or
+         HMG-API refuses the mod. `charging` already fills column 12 (it's the
+         same `getChargingStatus` number).
+   - [ ] after the PR is in an HMG-API release: add the four names to
+         `"vehicle": {"read": …}` in `mod.json`
 6. [ ] **Package:** a mod-signing key (kept private and backed up), then
        `tools/mkmodpkg.sh` (HMG-API mod) and `tools/mknemesismod.sh` (NEMESIS
        package that installs it through HMG-API); CI for both; catalogue PR.

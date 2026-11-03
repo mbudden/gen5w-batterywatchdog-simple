@@ -202,7 +202,7 @@ EOT
     : > "$1/logcat"
 }
 hm_run() {   # hm_run <dir> <loops>: data dir from HMG-API, no BWD_STATE
-    HMGAPI_MOD=battery-watchdog HMGAPI_DATA="$1/state" BWD_TEST_PATH="$1/bin" BWD_TEST=1 BWD_TEST_LOOPS=$2 "$SH" "$ROOT/package/svc/watchdog.sh" > "$1/out" 2>&1
+    HMGAPI_MOD=battery-watchdog HMGAPI_DATA="$1/state" HMGAPI_MOD_DIR="$1/mod" BWD_TEST_PATH="$1/bin" BWD_TEST=1 BWD_TEST_LOOPS=$2 "$SH" "$ROOT/package/svc/watchdog.sh" > "$1/out" 2>&1
 }
 
 # HA1: readings by name, no binder calls, same log format; car off/on = two drives
@@ -216,7 +216,7 @@ grep -q '^pct10=640' "$T/state/status" || fail "HA1: last reading should be 64.0
 grep -q '^hv10=705$' "$T/state/status" || fail "HA1: main battery should be 70.5%"
 grep -q '^temp_c=12$' "$T/state/status" || fail "HA1: outside temp should be 12 C"
 [ "$(grep -c ',start,' "$T/state/log.csv")" -eq 2 ] || fail "HA1: expected 2 drives from hv.ready"
-grep -q ',start,83,830,96,705,12,,,,,$' "$T/state/log.csv" || fail "HA1: first row should be 83,830,96,705,12"
+grep -q ',start,83,830,96,705,12,,,,,0$' "$T/state/log.csv" || fail "HA1: first row should be 83,830,96,705,12 and charging 0"
 grep -q 'PANEL_REFRESH -n com.nemesis.batterywatchdog/.PanelWidget' "$T/am" || fail "HA1: should refresh the panel page"
 rm -rf "$T"; echo "  HA1 HMG-API readings: ok"
 
@@ -234,7 +234,7 @@ rm "$T/hm/hv.soc" "$T/hm/hv.health"
 hm_run "$T" 3
 grep -q '^pct10=772$' "$T/state/status" || fail "HA3: 77.25 should be 772"
 grep -q '^temp_c=-3$' "$T/state/status" || fail "HA3: -3.5 C should be -3"
-grep -q ',start,77.25,772,,,-3,,,,,$' "$T/state/log.csv" || fail "HA3: unknown readings should be empty columns"
+grep -q ',start,77.25,772,,,-3,,,,,0$' "$T/state/log.csv" || fail "HA3: unknown readings should be empty columns"
 rm -rf "$T"; echo "  HA3 decimals and unknowns: ok"
 
 # HA4: hv.ready unknown -> falls back to the screen state
@@ -243,5 +243,18 @@ T=$(mktemp -d); hm_setup "$T"; rm "$T/hm/hv.ready"
 hm_run "$T" 12; wait
 [ "$(grep -c ',start,' "$T/state/log.csv")" -eq 2 ] || fail "HA4: screen fallback should give 2 drives"
 rm -rf "$T"; echo "  HA4 screen fallback: ok"
+
+# HA5: the sensor flags and saver option, once mod.json asks for them (not before)
+T=$(mktemp -d); hm_setup "$T"
+echo 1 > "$T/hm/battery12v.sensor_state"; echo 0 > "$T/hm/battery12v.sensor_invalid"
+echo 0 > "$T/hm/battery12v.sensor_error"; echo 2 > "$T/hm/battery12v.saver"
+mkdir -p "$T/mod"; echo '{"vehicle": {"read": ["battery12v.soc"]}}' > "$T/mod/mod.json"
+hm_run "$T" 3
+grep -q ',start,83,830,96,705,12,,,,,0$' "$T/state/log.csv" || fail "HA5: unlisted readings must not be asked for"
+rm -f "$T/state/log.csv"
+echo '{"vehicle": {"read": ["battery12v.soc", "battery12v.sensor_state", "battery12v.sensor_invalid", "battery12v.sensor_error", "battery12v.saver"]}}' > "$T/mod/mod.json"
+hm_run "$T" 3
+grep -q ',start,83,830,96,705,12,1,0,0,2,0$' "$T/state/log.csv" || fail "HA5: flags and saver should fill columns 8-11"
+rm -rf "$T"; echo "  HA5 sensor flags from HMG-API: ok"
 
 echo "PASS ($SH)"
