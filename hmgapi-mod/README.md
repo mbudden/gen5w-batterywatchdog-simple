@@ -37,12 +37,25 @@ firmware list, no temperature hunting and no root plumbing.
    - [x] tests HA1–HA4 in `tests/test_service.sh` with a mocked `hmgapid`
    - [ ] check on the car: `hv.ready` is 1 while the car is on (READY), and
          `battery12v.soc` matches the NEMESIS version's reading
-3. [ ] **App** (same APK, two modes):
-   - [ ] detect HMG-API (`hmgapid whoami`) and read state from `$HMGAPI_DATA`
-         instead of through NEMESIS root
-   - [ ] hide the firmware verification UI in that mode
-   - [ ] USB: also react to `hmgapi.intent.action.USB_FOLDER` (a drive with a
-         `BatteryWatchdog` folder) to offer or run Export
+3. [x] **App** (same APK, two modes, `MainActivity.detectMode()`):
+   - [x] detects HMG-API with `hmgapid whoami` (it answers the mod's id only to
+         a mod's own app) and then works on the service's folder,
+         `/data/hmgapi/run/<mod>/watch`, as itself: shell commands run as the
+         app and files are written directly, with no NEMESIS root channel
+   - [x] hides the firmware verification (and its override button) and the
+         test run; "Paused" says HMG-API has no 12V reading for this car yet
+   - [x] Read sensor now, Restart monitor and Diagnostics go through `hmgapid`
+         (`vehicle`, `service-restart watch`, `services`, `service-log watch`, `usb`)
+   - [x] Export tries HMG-API's `BatteryWatchdog` folder on a stick first, then the
+         drive's top level
+   - [ ] check on the car: whether an ordinary app may write to the stick at
+         all (Android 4.4 lets only system apps write to removable drives; the
+         NEMESIS version writes as root). If not, ask VysseCodes for a way to
+         copy into a mod's USB folder.
+   - [ ] check on the car: whether the service's toasts (`am broadcast`) and its
+         screen fallback (`dumpsys power`) work as the app's user
+   - [ ] later: react to `hmgapi.intent.action.USB_FOLDER` (offer Export when a
+         stick with the folder goes in), once writing is confirmed
 4. [ ] **Extras HMG-API makes possible:** tile icons in the car's style
        (`tools/mkicon.sh`); a side-panel page with the 12V % in the split screen
        (`"provides": {"panel": …}`).

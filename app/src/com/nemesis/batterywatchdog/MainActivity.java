@@ -36,12 +36,43 @@ import java.util.Locale;
  * Battery Watchdog. Shows what the battery.watchdog service has logged and
  * edits its one-value config files. Reads/writes /data/nemesis/state through
  * the privileged `nemesis root -c` channel (this app runs as an ordinary uid).
+ * Installed as an HMG-API mod instead, the service runs as this app's own user,
+ * so the app reads and writes the service's folder directly (see detectMode()).
  * Kotlin/lambdas avoided on purpose: built with legacy dx for KitKat (DEX 035).
  */
 public class MainActivity extends Activity {
 
-    static final String STATE = "/data/nemesis/state/battery.watchdog";
+    static final String NEM_STATE = "/data/nemesis/state/battery.watchdog";
+    static String STATE = NEM_STATE;
     static final String NEM = "/system/xbin/nemesis";
+
+    // ---- HMG-API mode ----------------------------------------------------------
+    // As an HMG-API mod (hmgapi-mod/mod.json) the service "watch" runs as this
+    // app's user, with its folder at /data/hmgapi/run/<mod>/watch. `hmgapid whoami`
+    // answers the mod's id only to a mod's own app, so that decides the mode.
+    static final String HMGAPID = "/system/bin/hmgapid";
+    static final String HM_SVC = "watch";
+    static final String HM_READINGS = "battery12v.soc hv.soc hv.health hv.ready charging outside_temp";
+    static String HM_MOD = null;
+    static boolean hm() { return HM_MOD != null; }
+
+    static void detectMode() {
+        HM_MOD = null; STATE = NEM_STATE;
+        if (!new File(HMGAPID).exists()) return;
+        try {
+            Process p = Runtime.getRuntime().exec(new String[] { HMGAPID, "whoami" });
+            BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+            String id = r.readLine();
+            if (p.waitFor() != 0 || id == null) return;
+            id = id.trim();
+            if (!id.matches("[a-z0-9][a-z0-9._-]{0,63}") || "root".equals(id)) return;
+            HM_MOD = id;
+            STATE = "/data/hmgapi/run/" + id + "/" + HM_SVC;
+        } catch (Exception e) { HM_MOD = null; STATE = NEM_STATE; }
+    }
+
+    /** `hmgapid <args>` as this app (HMG-API mode only) */
+    String hmgapid(String args) { return runRoot(HMGAPID + " " + args + " 2>&1"); }
     static final String[] DECODE = { "Auto", "Integer", "Float" };
     static final int[] INTERVALS = { 60, 300, 900 };
     static final int BG = Color.rgb(18, 20, 24), AMBER = Color.rgb(255, 170, 60),
@@ -76,6 +107,7 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         // drop the system title bar: the app draws its own title in the left column
         requestWindowFeature(Window.FEATURE_NO_TITLE);
+        detectMode();
         loadConfig();
 
         LinearLayout root = new LinearLayout(this);
@@ -187,7 +219,8 @@ public class MainActivity extends Activity {
         advBox.addView(rawLabel);
         advBox.addView(button("Diagnostics", new View.OnClickListener() { public void onClick(View v) { showDiagnostics(); } }));
         advBox.addView(button("Restart monitor", new View.OnClickListener() { public void onClick(View v) { restartService(); } }));
-        advBox.addView(button("Test run (10 s)", new View.OnClickListener() { public void onClick(View v) { testRun(); } }));
+        Button testBtn = button("Test run (10 s)", new View.OnClickListener() { public void onClick(View v) { testRun(); } });
+        if (!hm()) advBox.addView(testBtn);   // HMG-API runs the service; no direct runs from the app
         advBox.addView(button("Export to USB", new View.OnClickListener() { public void onClick(View v) { exportToUsb(); } }));
         advBox.addView(button("Share data\u2026", new View.OnClickListener() { public void onClick(View v) { showShareSteps(); } }));
         advBox.addView(button("Clear history", new View.OnClickListener() { public void onClick(View v) { clearHistory(); } }));
@@ -259,6 +292,15 @@ public class MainActivity extends Activity {
         String upd = kv(status, "updated"), warn = kv(status, "warn");
         int p = parse(pct, -1);
         bigLabel.setTextColor(Color.WHITE);
+        hmReading = hm() && state.length() > 0 && !"unverified".equals(state);
+        if (hm() && "unverified".equals(state)) {
+            bigLabel.setText("Paused");
+            bigLabel.setTextColor(AMBER);
+            updLabel.setText("HMG-API has no 12V reading for this car yet, so nothing is logged. See Advanced \u2192 Diagnostics.");
+            parkLabel.setText(""); ctxLabel.setText(""); warnLabel.setText(""); sohLabel.setVisibility(View.GONE);
+            showSoh(-1);
+            return;
+        }
         boolean paused = "unverified".equals(state) || "unverified".equals(verifyState) || "interface_mismatch".equals(verifyState);
         if (overrideBtn != null) overrideBtn.setVisibility("unverified".equals(verifyState) ? View.VISIBLE : View.GONE);
         if (paused && !verified()) {
@@ -388,6 +430,7 @@ public class MainActivity extends Activity {
 
     // SOH: tm_hscan_service 214 (0xd6) returns one raw byte, a health index (100 = new).
     int readSoh() {
+        if (hm()) return -1;                             // the service logs hv.health; shown from its status
         if (txSoh <= 0) return -1;                       // not verified on this firmware: don't call
         String r = runRoot("service call tm_hscan_service " + txSoh).trim();
         int i = r.indexOf("Parcel(");
@@ -415,6 +458,13 @@ public class MainActivity extends Activity {
     }
 
     void readNow() {
+        if (hm()) {
+            String r = hmgapid("vehicle battery12v.soc").trim();
+            String[] w = r.split("\\s+");
+            rawLabel.setText(w.length == 2 && !"-".equals(w[1]) ? "Sensor now: " + w[1] + "%   (HMG-API battery12v.soc)"
+                : "HMG-API: " + (r.length() > 0 ? r : "(no answer)"));
+            return;
+        }
         if (txSoc <= 0) { rawLabel.setText("Not verified on this firmware, so nothing was read."); return; }
         String r = runRoot("service call tm_hscan_service " + txSoc).trim();
         String shown = r;
@@ -460,6 +510,10 @@ public class MainActivity extends Activity {
     /** Returns resolved | saved | known_firmware | override | interface_mismatch | unverified. */
     String verify() {
         txSoc = txHv = txSoh = -1; txExtra.clear();
+        if (hm()) {   // HMG-API maps the readings for this car; nothing to look up here
+            fw = runRoot("getprop ro.build.version.incremental").trim();
+            return "hmgapi";
+        }
         fw = runRoot("getprop ro.build.version.incremental").trim();
         String svcList = runRoot("service list 2>/dev/null");
         if (!svcList.contains("tm_hscan_service: [" + IFACE + "]")) return "interface_mismatch";
@@ -629,7 +683,8 @@ public class MainActivity extends Activity {
             .setNegativeButton("Cancel", null).show();
     }
 
-    boolean verified() { return txSoc > 0; }
+    boolean verified() { return hm() ? hmReading : txSoc > 0; }
+    boolean hmReading;
 
     // ---- one-time, opt-in request to share data ---------------------------------
     // Shown once, the first time the app opens with verified readings (on an
@@ -645,7 +700,7 @@ public class MainActivity extends Activity {
         if (p.getBoolean(ASKED_SHARE, false)) return;
         if (!verified()) {
             // still checking: look again shortly; paused: ask on a later start
-            if ("checking".equals(verifyState) && ++shareTries < 20) handler.postDelayed(askShare, 3000);
+            if (("checking".equals(verifyState) || hm()) && ++shareTries < 20) handler.postDelayed(askShare, 3000);
             return;
         }
         p.edit().putBoolean(ASKED_SHARE, true).apply();
@@ -686,6 +741,7 @@ public class MainActivity extends Activity {
 
     /** Diagnostics text, shown in the dialog and saved by the USB export. */
     String buildDiagnostics() {
+        if (hm()) return buildHmDiagnostics();
         StringBuilder d = new StringBuilder();
         d.append("service: ").append(runRoot(NEM + " service status " + SVC_ID + " 2>&1").trim()).append("\n");
         d.append("app: ").append(appVersion()).append("   firmware: ").append(fw).append("\n");
@@ -732,6 +788,30 @@ public class MainActivity extends Activity {
         return d.toString();
     }
 
+    /** Diagnostics under HMG-API: its view of the mod and the service, plus our files. */
+    String buildHmDiagnostics() {
+        StringBuilder d = new StringBuilder();
+        d.append("mode: HMG-API mod ").append(HM_MOD).append("\n");
+        d.append("app: ").append(appVersion()).append("   firmware: ").append(fw).append("\n");
+        d.append("services:\n").append(firstLines(hmgapid("services"), 6));
+        d.append("readings now:\n").append(firstLines(hmgapid("vehicle " + HM_READINGS), 8));
+        d.append("file writes: ").append(lastWriteMethod.length() > 0 ? lastWriteMethod : "(none yet)").append("\n");
+        d.append("USB folders (HMG-API):\n").append(firstLines(hmgapid("usb"), 4)).append("\n");
+        String log = hmgapid("service-log " + HM_SVC);
+        String[] lines = log.trim().split("\n");
+        d.append("service log, newest first:\n");
+        if (log.trim().length() == 0) d.append("(empty)\n");
+        for (int i = lines.length - 1, n = 0; i >= 0 && n < 15; i--, n++) d.append(lines[i]).append("\n");
+        d.append("\n");
+        d.append("shell: ").append(runRoot("echo $KSH_VERSION").trim()).append("\n");
+        d.append("date: ").append(runRoot("date; date +%s").trim().replace("\n", "  |  ")).append("\n\n");
+        d.append("status file:\n").append(runRoot("cat " + STATE + "/status 2>&1").trim()).append("\n\n");
+        d.append("state dir (").append(STATE).append("):\n").append(runRoot("ls -l " + STATE + " 2>&1").trim()).append("\n\n");
+        String st = runRoot("cat " + STATE + "/status 2>/dev/null");
+        d.append("temperature: ").append(kv(st, "temp_c").length() > 0 ? kv(st, "temp_c") + " C via " + kv(st, "temp_src") : "none").append("\n");
+        return d.toString();
+    }
+
     static String firstLines(String text, int n) {
         String t = text.trim();
         if (t.length() == 0) return "(none)\n";
@@ -752,6 +832,12 @@ public class MainActivity extends Activity {
     }
 
     void restartService() {
+        if (hm()) {
+            String r = hmgapid("service-restart " + HM_SVC) + runRoot("sleep 3") + hmgapid("services");
+            rawLabel.setText("Restart: " + r.trim().replace("\n", "  |  "));
+            toast("Monitor restarted. Check Diagnostics in 30 seconds.");
+            return;
+        }
         // empty the old log first so anything shown afterwards is from this run
         String r = runRoot(": > " + SVC_LOG + " 2>/dev/null; "
                 + NEM + " service stop " + SVC_ID + " 2>&1; "
@@ -806,7 +892,13 @@ public class MainActivity extends Activity {
     /** the first writable USB root, or null */
     String usbRoot() {
         StringBuilder probe = new StringBuilder();
-        for (String r : USB_ROOTS) {
+        java.util.List<String> roots = new ArrayList<String>();
+        if (hm()) {
+            // HMG-API's BatteryWatchdog folder on a stick first: the likeliest place this app may write
+            for (String l : hmgapid("usb").split("\n")) if (l.trim().startsWith("/")) roots.add(l.trim());
+        }
+        for (String r : USB_ROOTS) roots.add(r);
+        for (String r : roots) {
             probe.append("[ -d " + r + " ] && touch " + r + "/.bwd_w 2>/dev/null && rm " + r + "/.bwd_w && echo " + r + " && exit 0; ");
         }
         String usb = runRoot("( " + probe + " ) 2>/dev/null").trim();
@@ -815,6 +907,11 @@ public class MainActivity extends Activity {
     }
 
     static final String NO_USB = "No USB drive found. Insert a FAT32 or exFAT drive and try again.";
+
+    String noUsb() {
+        return hm() ? "No USB drive this app can write to. Insert a FAT32 or exFAT drive with a folder named "
+            + "BatteryWatchdog at the top and try again." : NO_USB;
+    }
 
     /** state files read through root (the app can't read the state dir itself) */
     Map<String, String> readState(String[] names) {
@@ -829,7 +926,7 @@ public class MainActivity extends Activity {
     /** Export for sharing: only a zip, dates shifted, no file name or entry time that shows the date. */
     String doShareExport() {
         String usb = usbRoot();
-        if (usb == null) return NO_USB;
+        if (usb == null) return noUsb();
         Map<String, String> raw = readState(ShareZip.SHARE_FILES);
         if (raw.get("log.csv") == null && raw.get("log.old.csv") == null) return "There are no readings to export yet.";
         String info = "app: " + appVersion() + "\nfirmware: " + fw + "\nverification: " + verifyState + "\n";
@@ -845,7 +942,7 @@ public class MainActivity extends Activity {
 
     String doExport() {
         String usb = usbRoot();
-        if (usb == null) return NO_USB;
+        if (usb == null) return noUsb();
 
         String stamp = new SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(new Date());
         String dir = usb + "/BatteryWatchdog-export-" + stamp;
@@ -945,7 +1042,8 @@ public class MainActivity extends Activity {
     String runRoot(String cmd) {
         StringBuilder out = new StringBuilder();
         try {
-            Process p = Runtime.getRuntime().exec(new String[] { NEM, "root", "-c", cmd });
+            Process p = Runtime.getRuntime().exec(hm() ? new String[] { "/system/bin/sh", "-c", cmd }
+                    : new String[] { NEM, "root", "-c", cmd });
             BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
             String line;
             while ((line = r.readLine()) != null) out.append(line).append("\n");
@@ -984,6 +1082,15 @@ public class MainActivity extends Activity {
      */
     String writeRootStaged(String path, byte[] bytes, String text, StringBuilder why) {
         String q = shq(path);
+        if (hm()) {   // the service's folder is this app's own: write it directly
+            try {
+                java.io.FileOutputStream out = new java.io.FileOutputStream(path);
+                try { out.write(bytes); } finally { out.close(); }
+                if (written(path, bytes, text)) { lastWriteMethod = "direct"; return ""; }
+                why.append("direct: mismatch; ");
+            } catch (Exception e) { why.append("direct: ").append(e.getMessage()).append("; "); }
+            return null;
+        }
 
         // 1 + 2: stage a file, root copies it
         File[] stages = { stageDir(true), stageDir(false) };
