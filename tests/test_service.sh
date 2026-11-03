@@ -24,6 +24,11 @@ case "\$3" in
 \$(cat $T/txn_soc)) echo "Result: Parcel(00000000 \$(cat $T/socval)   '....S...')";;
 214) echo "Result: Parcel(00000000 00000064   'd...')";;
 74)  echo "Result: Parcel(00000000 428d0000   '.......B')";;
+140) echo "Result: Parcel(00000000 00000002   '........')";;
+141) echo "Result: Parcel(00000000 00000000   '........')";;
+142) echo "Result: Parcel(00000000 00000001   '........')";;
+225) echo "Result: Parcel(00000000 00000001   '........')";;
+86)  echo "Result: Parcel(00000000 00000003   '........')";;
 *)   echo "Result: Parcel(00000000 00000000   '........')";;
 esac
 EOT
@@ -56,8 +61,13 @@ grep -q 'dropped 19.0 pts while parked: 83.0% -> 64.0%, outside 53F' "$T/toasts"
 grep -q '^hv10=705$' "$T/state/status" || fail "A: main battery SOC should be 70.5%"
 grep -q '^temp_c=12$' "$T/state/status" || fail "A: outside temp should be 12 C"
 grep -q '^parked_min=0$' "$T/state/status" || fail "A: parked minutes should be recorded"
-grep -q ',705,12$' "$T/state/log.csv" || fail "A: log rows should carry hv10 and temp"
+grep -q ',705,12,,,,,$' "$T/state/log.csv" || fail "A: log rows should carry hv10 and temp (extras empty on known firmware)"
 rm -rf "$T"; echo "  A known firmware: ok"
+
+# A2: hand-verified firmware (no lookup by name) never calls the extra getters
+T=$(mktemp -d); setup "$T"; run "$T" 3
+grep -qE '^(140|141|142|225|86)$' "$T/calls" && fail "A2: known_firmware must not call extra getters"
+rm -rf "$T"; echo "  A2 known firmware calls no extras: ok"
 
 # B: unknown firmware, nothing resolved -> no binder calls at all
 T=$(mktemp -d); setup "$T"; echo eng.other.20990101.000000 > "$T/fw"
@@ -143,6 +153,25 @@ BWD_TEST_MIN_OFF=600 run "$T" 12; wait
 grep -q 'short stop' "$T/out" || fail "O: should log the short stop"
 rm -rf "$T"; echo "  O short stop: same drive"
 
+# Q: extra getters resolved by name are called and logged raw (columns 8-12)
+T=$(mktemp -d); setup "$T"
+printf 'fw=%s\nsoc=137\nhv=74\nsoh=214\nsns_state=140\nsns_invalid=141\nsns_error=142\naux_opt=225\nchg_status=86\nsource=/system/framework/x.odex\next=1\n' "$KNOWN_FW" > "$T/state/txn"
+run "$T" 3
+grep -q '^verify=resolved_by_name$' "$T/state/status" || fail "Q: should use the resolved numbers"
+line=$(grep ',sample,' "$T/state/log.csv" | head -n 1)
+case "$line" in *,2,0,1,1,3) ;; *) fail "Q: expected the extras at the end of the line, got: $line";; esac
+for n in 140 141 142 225 86; do grep -q "^$n\$" "$T/calls" || fail "Q: txn $n not called"; done
+rm -rf "$T"; echo "  Q extra getters logged: ok"
+
+# R: an override never calls extra getters, even if the file lists them
+T=$(mktemp -d); setup "$T"
+printf 'fw=%s\nsoc=137\nhv=74\nsoh=214\nsns_state=140\nsns_error=142\nsource=manual-override\n' "$KNOWN_FW" > "$T/state/txn"
+run "$T" 3
+grep -qE '^(140|142)$' "$T/calls" && fail "R: an override must not call the extra getters"
+line=$(grep ',sample,' "$T/state/log.csv" | head -n 1)
+case "$line" in *,,,,,) ;; *) fail "R: extras should be empty, got: $line";; esac
+rm -rf "$T"; echo "  R override calls no extras: ok"
+
 # P: denser sampling at the start of a drive
 T=$(mktemp -d); setup "$T"
 BWD_TEST_INTERVAL=600 BWD_TEST_EARLY_S=1 run "$T" 8
@@ -186,7 +215,7 @@ grep -q '^pct10=640' "$T/state/status" || fail "HA1: last reading should be 64.0
 grep -q '^hv10=705$' "$T/state/status" || fail "HA1: main battery should be 70.5%"
 grep -q '^temp_c=12$' "$T/state/status" || fail "HA1: outside temp should be 12 C"
 [ "$(grep -c ',start,' "$T/state/log.csv")" -eq 2 ] || fail "HA1: expected 2 drives from hv.ready"
-grep -q ',start,83,830,96,705,12$' "$T/state/log.csv" || fail "HA1: first row should be 83,830,96,705,12"
+grep -q ',start,83,830,96,705,12,,,,,$' "$T/state/log.csv" || fail "HA1: first row should be 83,830,96,705,12"
 rm -rf "$T"; echo "  HA1 HMG-API readings: ok"
 
 # HA2: no 12V reading from HMG-API (car not mapped) -> unverified, nothing logged
@@ -203,7 +232,7 @@ rm "$T/hm/hv.soc" "$T/hm/hv.health"
 hm_run "$T" 3
 grep -q '^pct10=772$' "$T/state/status" || fail "HA3: 77.25 should be 772"
 grep -q '^temp_c=-3$' "$T/state/status" || fail "HA3: -3.5 C should be -3"
-grep -q ',start,77.25,772,,,-3$' "$T/state/log.csv" || fail "HA3: unknown readings should be empty columns"
+grep -q ',start,77.25,772,,,-3,,,,,$' "$T/state/log.csv" || fail "HA3: unknown readings should be empty columns"
 rm -rf "$T"; echo "  HA3 decimals and unknowns: ok"
 
 # HA4: hv.ready unknown -> falls back to the screen state

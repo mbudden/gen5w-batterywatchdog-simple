@@ -437,6 +437,18 @@ public class MainActivity extends Activity {
     static final String KNOWN_FILE = "/data/nemesis/apps/battery.watchdog/known_firmware.txt";
     String fw = "", verifyState = "checking", verifySource = "";
     int txSoc = -1, txHv = -1, txSoh = -1;
+    /**
+     * Read-only getters logged alongside the 12V reading, raw, until their values
+     * are understood: the 12V battery sensor's state, invalid and error flags, the
+     * Auxiliary Battery Saver option, and HV charging status. Only ever taken from
+     * a lookup by name on this firmware (never from known_firmware.txt or an
+     * override), so a number from another build can't be called by mistake.
+     */
+    static final String[][] EXTRAS = {
+        { "sns_state", "getBATSNSRState" }, { "sns_invalid", "getBATSNSRInvalid" },
+        { "sns_error", "getBATSNSRError" }, { "aux_opt", "get_BAT_AuxBattOpt" },
+        { "chg_status", "getChargingStatus" } };
+    final Map<String, Integer> txExtra = new HashMap<String, Integer>();
 
     void startVerification() {
         new Thread(new Runnable() { public void run() {
@@ -447,7 +459,7 @@ public class MainActivity extends Activity {
 
     /** Returns resolved | saved | known_firmware | override | interface_mismatch | unverified. */
     String verify() {
-        txSoc = txHv = txSoh = -1;
+        txSoc = txHv = txSoh = -1; txExtra.clear();
         fw = runRoot("getprop ro.build.version.incremental").trim();
         String svcList = runRoot("service list 2>/dev/null");
         if (!svcList.contains("tm_hscan_service: [" + IFACE + "]")) return "interface_mismatch";
@@ -457,7 +469,16 @@ public class MainActivity extends Activity {
         if (fw.length() > 0 && fw.equals(kv(saved, "fw")) && parse(kv(saved, "soc"), -1) > 0) {
             txSoc = parse(kv(saved, "soc"), -1); txHv = parse(kv(saved, "hv"), -1); txSoh = parse(kv(saved, "soh"), -1);
             verifySource = kv(saved, "source");
-            return "manual-override".equals(verifySource) ? "override" : "resolved (saved earlier)";
+            if ("manual-override".equals(verifySource)) return "override";
+            for (String[] x : EXTRAS) { int n = parse(kv(saved, x[0]), -1); if (n > 0) txExtra.put(x[0], n); }
+            // saved by a version that didn't look up the extra getters: look them up once
+            if (kv(saved, "ext").length() == 0 && verifySource.startsWith("/")) {
+                int soc = txSoc, hv = txHv, soh = txSoh;
+                String r = resolveByName(new StringBuilder());
+                if (r != null && txSoc == soc) { verifySource = r; saveTxn(r); }
+                else { txSoc = soc; txHv = hv; txSoh = soh; saveTxn(verifySource); }   // keep the old numbers, mark as checked
+            }
+            return "resolved (saved earlier)";
         }
 
         // 2. resolve by name from the firmware's own interface definition.
@@ -542,6 +563,8 @@ public class MainActivity extends Activity {
         if (soc == null) return false;
         Integer hv = m.get("remainBatteryPercentage"), soh = m.get("getXEV_Bms_GDS_SOH");
         txSoc = soc; txHv = hv == null ? -1 : hv; txSoh = soh == null ? -1 : soh;
+        txExtra.clear();
+        for (String[] x : EXTRAS) { Integer n = m.get(x[1]); if (n != null && n > 0) txExtra.put(x[0], n); }
         return true;
     }
 
@@ -575,7 +598,19 @@ public class MainActivity extends Activity {
             + "; echo 'soc=" + txSoc + "' >> " + f
             + "; echo 'hv=" + (txHv > 0 ? txHv : "") + "' >> " + f
             + "; echo 'soh=" + (txSoh > 0 ? txSoh : "") + "' >> " + f
+            + extrasEcho(f, source)
             + "; echo 'source=" + source + "' >> " + f);
+    }
+
+    /** the extra getters' lines for the txn file; none for an override (and ext=1: looked up) */
+    String extrasEcho(String f, String source) {
+        if ("manual-override".equals(source)) return "";
+        StringBuilder b = new StringBuilder();
+        for (String[] x : EXTRAS) {
+            Integer n = txExtra.get(x[0]);
+            b.append("; echo '").append(x[0]).append('=').append(n == null ? "" : String.valueOf(n)).append("' >> ").append(f);
+        }
+        return b.append("; echo 'ext=1' >> ").append(f).toString();
     }
 
     void confirmOverride() {
@@ -656,6 +691,7 @@ public class MainActivity extends Activity {
         d.append("app: ").append(appVersion()).append("   firmware: ").append(fw).append("\n");
         d.append("verification: ").append(verifyState).append(verifySource.length() > 0 ? " (" + verifySource + ")" : "")
             .append("  soc=").append(txSoc).append(" hv=").append(txHv).append(" soh=").append(txSoh).append("\n");
+        d.append("logged too (by name): ").append(txExtra.isEmpty() ? "none" : txExtra.toString()).append("\n");
         d.append("file writes: ").append(lastWriteMethod.length() > 0 ? lastWriteMethod : "(none yet)").append("\n");
         d.append("telematics battery-related functions (names only, nothing is called):\n")
             .append(firstLines(batteryFunctions(), 40)).append("\n");
@@ -823,7 +859,7 @@ public class MainActivity extends Activity {
         // readable files built here, then copied over by root
         SimpleDateFormat t = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
         int rows = 0;
-        StringBuilder rd = new StringBuilder("time,event,v12_pct,main_battery_pct,outside_f,hv_soh,raw\n");
+        StringBuilder rd = new StringBuilder("time,event,v12_pct,main_battery_pct,outside_f,hv_soh,raw,sensor_state,sensor_invalid,sensor_error,aux_saver_opt,charging_status\n");
         String log = runRoot("cat " + STATE + "/log.old.csv " + STATE + "/log.csv 2>/dev/null");
         for (String line : log.split("\n")) {
             String[] f = line.split(",", -1);
@@ -835,7 +871,9 @@ public class MainActivity extends Activity {
             String tf = f.length > 6 && f[6].trim().length() > 0 ? String.valueOf(Math.round(parse(f[6], 0) * 9 / 5f + 32)) : "";
             rd.append(t.format(new Date(ts * 1000))).append(',').append(f[1]).append(',')
               .append(p >= 0 ? fmt10(p) : "").append(',').append(hv).append(',').append(tf).append(',')
-              .append(f.length > 4 ? f[4] : "").append(',').append(f[2]).append('\n');
+              .append(f.length > 4 ? f[4] : "").append(',').append(f[2]);
+            for (int k = 7; k <= 11; k++) rd.append(',').append(f.length > k ? f[k] : "");
+            rd.append('\n');
             rows++;
         }
 
