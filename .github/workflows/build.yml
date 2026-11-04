@@ -16,8 +16,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # test builds: 0.5.0-dev.<run>; releases: plain VERSION. versionCode always increases.
-      BWD_VERSION_SUFFIX: ${{ github.event_name == 'release' && '' || format('-dev.{0}', github.run_number) }}
+      # test builds: 0.5.0-dev.<run>; releases and v* tags: plain VERSION. versionCode always increases.
+      # The dev format comes first because an empty string counts as false in these expressions.
+      BWD_VERSION_SUFFIX: ${{ (github.event_name != 'release' && !startsWith(github.ref, 'refs/tags/v')) && format('-dev.{0}', github.run_number) || '' }}
       BWD_VERSION_CODE: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v5
