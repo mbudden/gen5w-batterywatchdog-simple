@@ -104,8 +104,7 @@ jobs:
             echo "::notice title=HMG-API mod::no HMGAPI_MOD_KEY secret: the mod isn't built (a throwaway key would give it a different identity)"
             exit 0
           fi
-          umask 077
-          printf '%s\n' "$MOD_KEY" > "$RUNNER_TEMP/mod.key"
+          ( umask 077; printf '%s\n' "$MOD_KEY" > "$RUNNER_TEMP/mod.key" )   # only the key is private
           tools/make_hmgapi_mod.sh hmgapi-tools "$RUNNER_TEMP/mod.key"
           rm -f "$RUNNER_TEMP/mod.key" "$RUNNER_TEMP/mod.key.pub"
 
