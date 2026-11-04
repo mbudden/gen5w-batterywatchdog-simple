@@ -77,6 +77,9 @@ jobs:
       - name: Test the transaction-number resolver against a real DEX
         run: BT="$ANDROID_SDK_ROOT/build-tools/30.0.3" tests/test_resolver.sh
 
+      - name: Test the home screen's numbers
+        run: tests/test_drives.sh
+
       - name: Test the offline analysis on synthetic data
         run: python3 tests/test_analyze.py
 
