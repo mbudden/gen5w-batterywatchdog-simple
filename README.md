@@ -17,6 +17,9 @@ on every drive and tells you when something looks wrong.
 > checks are unchanged. Install it from this repository's builds, because the
 > NEMESIS Package Store offers the original.
 
+![Battery Watchdog home screen: 12V charge and gauge, the last 7 days with a drives chart, and checks](docs/previews/home-night.png)
+<sub>Mockup of the app on the 1920×720 Gen5W screen, with sample data.</sub>
+
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y3L829W9V7)
 
 Battery Watchdog is free. If it's useful to you, a tip is appreciated, and
@@ -122,12 +125,24 @@ more, so quick stops don't clutter the history.
 
 The colors follow the head unit's day and night display mode.
 
+![The home screen in day mode](docs/previews/home-light.png)
+<sub>Day mode. Mockup with sample data.</sub>
+
+When something needs a look, the card turns amber, the parked drop stands out
+on the chart, and Checks shows what triggered it:
+
+![The home screen showing a low 12V reading after a large drop while parked](docs/previews/home-warning.png)
+<sub>A low 12V warning. Mockup with sample data.</sub>
+
 With the head unit's **split view** open, the app keeps clear of the map
 panel on the right: the 12V Battery and Last 7 Days cards stay visible, and
 Checks and Settings return when the split view closes.
 
 **Settings** has its own page, and the car's back button returns to the home
 screen.
+
+![The Settings page: warnings, sensor options and tools](docs/previews/settings-night.png)
+<sub>Mockup with sample data.</sub>
 
 | Setting | Default | What it does |
 |---|---|---|
