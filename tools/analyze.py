@@ -6,7 +6,7 @@ analyze.py - offline analysis of Battery Watchdog exports, for developing
     python3 tools/analyze.py <export folder> [--csv features.csv] [--plot report.png]
     python3 tools/analyze.py <export folder> --share data.zip
 
-<export folder> is a BatteryWatchdog-export-... folder from Advanced -> Export
+<export folder> is a BatteryWatchdog-export-... folder from Settings -> Export
 to USB (it reads raw/log.csv and raw/log.old.csv), or any folder holding
 log.csv. Pure Python 3; --plot needs matplotlib.
 

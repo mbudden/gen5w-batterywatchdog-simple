@@ -85,7 +85,7 @@ requests). So the numbers are never used blindly:
    (`-` for a missing one). Both the service and the app read this one file
    from the installed package. Currently
    `eng.vmadmin.20260507.094910  137  74  214` (2023 Ioniq 5 SEL US, 260507).
-3. **Manual override (app).** Advanced → "use built-in numbers…", with a
+3. **Manual override (app).** Settings → "Use Built-In Numbers…", with a
    warning; saved to `txn` as `source=manual-override` for this firmware only.
 
 The service uses `txn` only if its `fw` matches the running firmware, and
@@ -233,7 +233,7 @@ If NEMESIS's log shows `giving up on battery.watchdog/<service>`, it stopped
 launching that service after it crashed repeatedly. On the reference car this
 persisted across package updates **and** a head-unit reboot, and
 `nemesis service start` didn't clear it. Renaming the service (`monitor` →
-`watch` in v0.2.6) gave it a clean slate. **Advanced → Test run** runs the
+`watch` in v0.2.6) gave it a clean slate. **Settings → Test Run** runs the
 script directly, outside NEMESIS, to tell a script problem from a NEMESIS one.
 
 ## Testing

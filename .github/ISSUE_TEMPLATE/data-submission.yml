@@ -9,7 +9,7 @@ body:
         Thanks for helping! Battery Watchdog's next health checks (how fast the 12V recovers at the start of a drive, how much it drains while parked, and so on) need real logs from many cars, **especially from batteries that later failed or were replaced**.
 
         **What's in an export:** 12V and main battery charge readings, outside temperature, battery health, and the date and time of each reading. It has no location, VIN or account details, but the dates and times do show when you drive and park.
-        **Prefer not to share dates?** In the app, choose Advanced → Export to USB → **For sharing, dates hidden**. It writes a zip with only the battery log, every date moved back by the same random number of weeks (time of day and day of week kept). For an older export, `python3 tools/analyze.py <export folder> --share data.zip` does the same.
+        **Prefer not to share dates?** In the app, choose Settings → Export to USB → **For sharing, dates hidden**. It writes a zip with only the battery log, every date moved back by the same random number of weeks (time of day and day of week kept). For an older export, `python3 tools/analyze.py <export folder> --share data.zip` does the same.
 
         The more days the better: two weeks is useful, a few months is great. This issue is public.
   - type: input
@@ -71,7 +71,7 @@ body:
     id: files
     attributes:
       label: Data
-      description: Drag in the .zip that Advanced → Export to USB wrote to the drive (BatteryWatchdog-export-… or BatteryWatchdog-share-…).
+      description: Drag in the .zip that Settings → Export to USB wrote to the drive (BatteryWatchdog-export-… or BatteryWatchdog-share-…).
     validations:
       required: true
   - type: checkboxes
