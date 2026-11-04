@@ -26,7 +26,7 @@ body:
     id: firmware
     attributes:
       label: Firmware
-      description: The `firmware:` line from Advanced → Diagnostics (looks like `eng.vmadmin.20260507.094910`), and the version from the car's settings if you know it.
+      description: The `firmware:` line from Settings → Diagnostics (looks like `eng.vmadmin.20260507.094910`), and the version from the car's settings if you know it.
       placeholder: eng.vmadmin.20260507.094910 / NEEV.USA.0000.V015.012.260507
     validations:
       required: true
@@ -74,4 +74,4 @@ body:
     id: notes
     attributes:
       label: Photo of Diagnostics and anything else
-      description: Drag in a photo of the top of Advanced → Diagnostics.
+      description: Drag in a photo of the top of Settings → Diagnostics.

@@ -2,207 +2,91 @@ package com.nemesis.batterywatchdog;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.SharedPreferences;
+import android.app.UiModeManager;
 import android.content.Context;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.drawable.GradientDrawable;
+import android.content.DialogInterface;
+import android.content.SharedPreferences;
+import android.content.res.Configuration;
+import android.database.ContentObserver;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.os.Handler;
-import android.database.ContentObserver;
 import android.provider.Settings;
+import android.text.TextUtils;
+import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
-import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.content.DialogInterface;
-import java.io.BufferedReader;
-import java.io.File;
-import java.util.HashMap;
-import java.util.Map;
-import java.io.InputStreamReader;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 
 /**
- * Battery Watchdog. Shows what the battery.watchdog service has logged and
- * edits its one-value config files. Reads/writes /data/nemesis/state through
- * the privileged `nemesis root -c` channel (this app runs as an ordinary uid).
+ * Battery Watchdog. Shows what the battery.watchdog service has logged and edits
+ * its one-value config files.
  * Kotlin/lambdas avoided on purpose: built with legacy dx for KitKat (DEX 035).
+ *
+ * Two screens for the 1920x720 Gen5W display, neither of which scrolls:
+ *   home     : 12V battery, last 7 days with the drives chart, checks
+ *   settings : warnings, sensor, tools
  */
 public class MainActivity extends Activity {
+    private static final String STATE = RootShell.STATE, NEM = RootShell.NEM;
+    private static final String SVC_ID = RootShell.SVC_ID, SVC_LOG = RootShell.SVC_LOG, SVC_SCRIPT = RootShell.SVC_SCRIPT;
+    private static final int HOME = 0, SETTINGS = 1;
+    private static final String[] CHECK_LABELS = { "12V at Start", "Parked Drain", "Last Drive", "HV Battery Health", "Firmware" };
 
-    static final String STATE = "/data/nemesis/state/battery.watchdog";
-    static final String NEM = "/system/xbin/nemesis";
-    static final String[] DECODE = { "Auto", "Integer", "Float" };
-    static final int[] INTERVALS = { 60, 300, 900 };
-    static final int BG = Color.rgb(18, 20, 24), AMBER = Color.rgb(255, 170, 60),
-            GREEN = Color.rgb(110, 210, 140), MUTED = Color.rgb(150, 160, 170), ACCENT = Color.rgb(120, 180, 255);
+    private final Handler handler = new Handler();
+    private final Config config = new Config();
+    private RootShell sh;
+    private Firmware firmware;
+    private UsbExport export;
+    private Palette palette = Palette.DARK;
+    private Ui ui;
+    private FrameLayout content;
+    private int screen = HOME;
+    private boolean carNight, compact, splitObserved, saveDirty;
 
-    boolean enabled = true, toastStart = false, advanced = false;
-    int warnPct = 60, dropPct = 15, decode = 1, scaleX10 = 10, interval = 300;
+    // home
+    private TextView heroValue, statusWord, updatedText, detailText, mainBattery, outside;
+    private TextView statDrives, statLowest, statRate, statRecharges;
+    private Gauge gauge;
+    private DriveChart chart;
+    private final CheckMark[] checkMarks = new CheckMark[CHECK_LABELS.length];
+    private final TextView[] checkValues = new TextView[CHECK_LABELS.length];
 
-    LinearLayout sohBox;
-    TextView sohTitle, sohValue;
-    TextView parkLabel, ctxLabel, sumLabel;
-    TextView bigLabel, updLabel, sohLabel, warnLabel, warnThrLabel, dropThrLabel, rawLabel;
-    Button enBtn, toastBtn, decBtn, scaleBtn, intBtn, advBtn;
-    LinearLayout advBox;
-    Button overrideBtn;
-    Chart chart;
+    // settings
+    private ToggleSwitch monitorSwitch;
+    private TextView warnValue, dropValue, readButton;
+    private View overrideTile;
 
     // auto-refresh while the screen is open (the service samples every few minutes)
-    final Handler handler = new Handler();
-    final Runnable tick = new Runnable() {
+    private final Runnable tick = new Runnable() {
         public void run() { refreshData(); handler.postDelayed(this, 30000); }
     };
+    // settings save shortly after the last change, so repeated taps write once
+    private final Runnable saveTask = new Runnable() { public void run() { flushSave(); } };
 
-    /*
-     * Layout for the 1920x720 Gen5W screen: three columns, no page scrolling.
-     *   left  (3) : live 12V reading, warning, SOH, read-sensor button
-     *   middle(5) : chart, full height
-     *   right (3) : settings (scrolls on its own if it ever overflows)
-     */
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-        // drop the system title bar: the app draws its own title in the left column
+        // drop the system title bar: the cards are the whole screen
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        loadConfig();
+        sh = new RootShell(this);
+        firmware = new Firmware(this, sh);
+        export = new UsbExport(sh, firmware);
+        config.load(sh);
 
-        LinearLayout root = new LinearLayout(this);
-        rootView = root;
-        root.setOrientation(LinearLayout.HORIZONTAL);
-        root.setBackgroundColor(BG);
-        int pad = dp(16);
-        root.setPadding(pad, pad, pad, pad);
-
-        // ---- left: status --------------------------------------------------
-        // Compact so the SOH box always fits on the 720 px-tall screen; the
-        // column also scrolls on its own as a fallback. The read-sensor button
-        // lives under Advanced now.
-        LinearLayout left = column();
-        left.setPadding(0, 0, dp(12), 0);
-        TextView t = title("Battery Watchdog");
-        t.setTextSize(20);
-        t.setPadding(0, 0, 0, dp(2));
-        left.addView(t);
-        bigLabel = new TextView(this);
-        bigLabel.setTextColor(Color.WHITE);
-        bigLabel.setTextSize(48);
-        bigLabel.setIncludeFontPadding(false);
-        left.addView(bigLabel);
-        updLabel = hint("");
-        left.addView(updLabel);
-        parkLabel = new TextView(this);
-        parkLabel.setTextColor(Color.WHITE);
-        parkLabel.setTextSize(15);
-        left.addView(parkLabel);
-        ctxLabel = hint("");
-        ctxLabel.setPadding(0, dp(2), 0, dp(2));
-        left.addView(ctxLabel);
-        warnLabel = new TextView(this);
-        warnLabel.setTextColor(AMBER);
-        warnLabel.setTextSize(16);
-        warnLabel.setPadding(0, dp(2), 0, dp(6));
-        left.addView(warnLabel);
-        sohLabel = hint("");
-        sohLabel.setVisibility(View.GONE);
-        left.addView(sohLabel);
-        // HV battery health box: read live, not logged or monitored
-        sohBox = new LinearLayout(this);
-        sohBox.setOrientation(LinearLayout.VERTICAL);
-        sohBox.setPadding(dp(14), dp(8), dp(14), dp(10));
-        sohTitle = new TextView(this);
-        sohTitle.setText("HV battery health (SOH)");
-        sohTitle.setTextSize(14);
-        sohBox.addView(sohTitle);
-        sohValue = new TextView(this);
-        sohValue.setTextSize(22);
-        sohValue.setIncludeFontPadding(false);
-        sohBox.addView(sohValue);
-        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        sp.setMargins(0, dp(4), 0, dp(4));
-        left.addView(sohBox, sp);
-        TextView sumHead = section("Last 7 days");
-        sumHead.setPadding(0, dp(8), 0, dp(2));
-        left.addView(sumHead);
-        sumLabel = new TextView(this);
-        sumLabel.setTextColor(Color.WHITE);
-        sumLabel.setTextSize(14);
-        left.addView(sumLabel);
-        ScrollView leftScroll = new ScrollView(this);
-        leftScroll.addView(left);
-
-        // ---- middle: chart -------------------------------------------------
-        LinearLayout mid = column();
-        mid.setPadding(dp(16), 0, dp(16), 0);
-        mid.addView(section("Recent drives \u00B7 12V at start (white) and end (blue) \u00B7 dashed = parked"));
-        chart = new Chart(this, dp(1));
-        mid.addView(chart, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        // ---- right: settings -----------------------------------------------
-        ScrollView rightScroll = new ScrollView(this);
-        rightCol = rightScroll;
-        LinearLayout right = new LinearLayout(this);
-        right.setOrientation(LinearLayout.VERTICAL);
-        rightScroll.addView(right);
-
-        right.addView(button("Save", new View.OnClickListener() { public void onClick(View v) { saveConfig(); } }));
-        right.addView(hint("Applies from the next drive."));
-        right.addView(section("Warnings"));
-        enBtn = button("", new View.OnClickListener() { public void onClick(View v) { enabled = !enabled; refreshButtons(); } });
-        right.addView(enBtn);
-        warnThrLabel = label();
-        right.addView(warnThrLabel);
-        right.addView(seek(30, 90, warnPct, new Setter() { public void set(int v) { warnPct = v; refreshButtons(); } }));
-        dropThrLabel = label();
-        right.addView(dropThrLabel);
-        right.addView(seek(5, 40, dropPct, new Setter() { public void set(int v) { dropPct = v; refreshButtons(); } }));
-        toastBtn = button("", new View.OnClickListener() { public void onClick(View v) { toastStart = !toastStart; refreshButtons(); } });
-        right.addView(toastBtn);
-
-        advBtn = button("", new View.OnClickListener() { public void onClick(View v) { advanced = !advanced; refreshButtons(); } });
-        right.addView(advBtn);
-        advBox = new LinearLayout(this);
-        advBox.setOrientation(LinearLayout.VERTICAL);
-        intBtn = button("", new View.OnClickListener() { public void onClick(View v) {
-            int i = 0; while (i < INTERVALS.length && INTERVALS[i] != interval) i++;
-            interval = INTERVALS[(i + 1) % INTERVALS.length]; refreshButtons(); } });
-        advBox.addView(intBtn);
-        decBtn = button("", new View.OnClickListener() { public void onClick(View v) { decode = (decode + 1) % 3; refreshButtons(); } });
-        advBox.addView(decBtn);
-        scaleBtn = button("", new View.OnClickListener() { public void onClick(View v) { scaleX10 = scaleX10 == 10 ? 5 : 10; refreshButtons(); } });
-        advBox.addView(scaleBtn);
-        advBox.addView(button("Read sensor now", new View.OnClickListener() { public void onClick(View v) { readNow(); } }));
-        rawLabel = hint("");
-        advBox.addView(rawLabel);
-        advBox.addView(button("Diagnostics", new View.OnClickListener() { public void onClick(View v) { showDiagnostics(); } }));
-        advBox.addView(button("Restart monitor", new View.OnClickListener() { public void onClick(View v) { restartService(); } }));
-        advBox.addView(button("Test run (10 s)", new View.OnClickListener() { public void onClick(View v) { testRun(); } }));
-        advBox.addView(button("Export to USB", new View.OnClickListener() { public void onClick(View v) { exportToUsb(); } }));
-        advBox.addView(button("Share data\u2026", new View.OnClickListener() { public void onClick(View v) { showShareSteps(); } }));
-        advBox.addView(button("Clear history", new View.OnClickListener() { public void onClick(View v) { clearHistory(); } }));
-        overrideBtn = button("Unverified firmware: use built-in numbers\u2026", new View.OnClickListener() { public void onClick(View v) { confirmOverride(); } });
-        advBox.addView(overrideBtn);
-        right.addView(advBox);
-
-        right.setPadding(0, 0, 0, dp(56));   // keep the last button clear of the screen's rounded corner
-
-        root.addView(leftScroll, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 3f));
-        root.addView(mid, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 5f));
-        root.addView(rightScroll, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 3f));
-
-        setContentView(root);
-        refreshButtons();
+        content = new FrameLayout(this);
+        setContentView(content);
+        carNight = night(getResources().getConfiguration());
+        palette = Palette.of(carNight);
+        ui = new Ui(this, palette);
+        applyWindowColors();
+        compact = splitOn();
+        applySplitPadding();
+        showScreen();
         startVerification();
         handler.postDelayed(askShare, 2000);
     }
@@ -210,6 +94,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // A day/night switch while the app was hidden may not have reached onConfigurationChanged.
+        carNight = night(getResources().getConfiguration());
+        applyAppearance();
         try {
             getContentResolver().registerContentObserver(Settings.System.getUriFor(SPLIT_SETTING), false, splitObserver);
             splitObserved = true;
@@ -222,451 +109,631 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         handler.removeCallbacks(tick);
+        flushSave();
         if (splitObserved) { getContentResolver().unregisterContentObserver(splitObserver); splitObserved = false; }
+    }
+
+    @Override
+    protected void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        super.onDestroy();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (screen == SETTINGS) { show(HOME); return; }
+        super.onBackPressed();
+    }
+
+    // ---- day and night ---------------------------------------------------------
+    // uiMode is in configChanges, so a day/night switch arrives here instead of recreating.
+    // Found by the Launchpad / gen5w-preconditioning project: the car's Day/Night display
+    // mode sets Android night mode, and the configuration follows it.
+    @Override
+    public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        carNight = night(configuration);
+        applyAppearance();
+    }
+
+    private boolean night(Configuration configuration) {
+        int night = configuration.uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        if (night != Configuration.UI_MODE_NIGHT_UNDEFINED) return night == Configuration.UI_MODE_NIGHT_YES;
+        UiModeManager manager = (UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
+        return manager == null || manager.getNightMode() != UiModeManager.MODE_NIGHT_NO;
+    }
+
+    private void applyAppearance() {
+        Palette next = Palette.of(carNight);
+        if (next == palette) return;
+        palette = next;
+        ui = new Ui(this, palette);
+        applyWindowColors();
+        showScreen();
+    }
+
+    private void applyWindowColors() {
+        content.setBackgroundColor(palette.background);
+        getWindow().setBackgroundDrawable(new ColorDrawable(palette.background));
     }
 
     // ---- split screen -----------------------------------------------------------
     // Hyundai's split view draws the map panel over the right of the screen without
     // resizing this app. Settings.System "split_screen_status" is 1 while it's open
     // (found by the Launchpad / gen5w-preconditioning project). The panel's width
-    // isn't reported (about 29 % in photos), so a third is kept clear, and the
-    // settings column is hidden; close the split view to change settings.
-    static final String SPLIT_SETTING = "split_screen_status";
-    LinearLayout rootView;
-    View rightCol;
-    boolean compact, splitObserved;
-    final ContentObserver splitObserver = new ContentObserver(handler) {
+    // isn't reported (about 29 % in photos), so a third is kept clear. There's only
+    // room for the battery and the drives then; close the split view to change settings.
+    private static final String SPLIT_SETTING = "split_screen_status";
+    private final ContentObserver splitObserver = new ContentObserver(handler) {
         @Override public void onChange(boolean selfChange) { applySplit(); }
     };
 
-    boolean splitOn() {
+    private boolean splitOn() {
         try { return Settings.System.getInt(getContentResolver(), SPLIT_SETTING, 0) == 1; }
         catch (Exception e) { return false; }
     }
 
-    void applySplit() {
-        compact = splitOn();
-        int pad = dp(16);
-        int right = compact ? Math.round(getResources().getDisplayMetrics().widthPixels / 3f) : pad;
-        rootView.setPadding(pad, pad, right, pad);
-        rightCol.setVisibility(compact ? View.GONE : View.VISIBLE);
+    private void applySplit() {
+        boolean next = splitOn();
+        if (next == compact) return;
+        compact = next;
+        applySplitPadding();
+        if (compact) screen = HOME;
+        showScreen();
     }
 
-    // ---- data ---------------------------------------------------------------
-    void refreshData() {
-        String status = runRoot("cat " + STATE + "/status 2>/dev/null");
-        String state = kv(status, "state"), pct = kv(status, "pct10"), soh = kv(status, "soh_raw");
-        String upd = kv(status, "updated"), warn = kv(status, "warn");
-        int p = parse(pct, -1);
-        bigLabel.setTextColor(Color.WHITE);
+    private void applySplitPadding() {
+        int right = compact ? Math.round(getResources().getDisplayMetrics().widthPixels / 3f) : ui.dp(64);
+        content.setPadding(ui.dp(32), ui.dp(24), right, ui.dp(24));
+    }
+
+    // ---- screens ------------------------------------------------------------------
+    private void show(int next) {
+        screen = next;
+        showScreen();
+    }
+
+    private void showScreen() {
+        flushSave();
+        content.removeAllViews();
+        heroValue = null; monitorSwitch = null; overrideTile = null;
+        if (screen == SETTINGS) buildSettings(); else { buildHome(); refreshData(); }
+    }
+
+    private void buildHome() {
+        LinearLayout body = ui.row();
+        content.addView(body, new FrameLayout.LayoutParams(Ui.FILL, Ui.FILL));
+
+        // 12V battery: heading at the top, then evenly spaced reading, gauge and context
+        LinearLayout battery = ui.panel(body, compact ? 0.38f : 0.28f, 0);
+        battery.addView(ui.caption("12V BATTERY"));
+        battery.addView(ui.spacer());
+        heroValue = ui.text(Fmt.NONE, 72, palette.ink, true);
+        heroValue.setSingleLine(true);
+        battery.addView(heroValue);
+        LinearLayout status = ui.row();
+        status.setBaselineAligned(true);
+        status.setGravity(Gravity.BOTTOM);
+        statusWord = ui.text("", 22, palette.ink, true);
+        statusWord.setSingleLine(true);
+        status.addView(statusWord);
+        updatedText = ui.text("", 14, palette.muted, false);
+        updatedText.setSingleLine(true);
+        updatedText.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams updatedParams = new LinearLayout.LayoutParams(0, Ui.WRAP, 1);
+        updatedParams.leftMargin = ui.dp(10);
+        status.addView(updatedText, updatedParams);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(Ui.FILL, Ui.WRAP);
+        statusParams.topMargin = ui.dp(6);
+        battery.addView(status, statusParams);
+        detailText = ui.text("", 16, palette.muted, false);
+        detailText.setLineSpacing(0, 1.15f);
+        detailText.setVisibility(View.GONE);
+        battery.addView(detailText, ui.below(10));
+        battery.addView(ui.spacer());
+        gauge = new Gauge(this, palette);
+        battery.addView(gauge, new LinearLayout.LayoutParams(Ui.FILL, ui.dp(62)));
+        battery.addView(ui.spacer());
+        battery.addView(ui.hairline());
+        LinearLayout context = ui.row();
+        context.setPadding(0, ui.dp(14), 0, 0);
+        mainBattery = stat(context, "Main Battery", 14);
+        outside = stat(context, "Outside", 14);
+        battery.addView(context, new LinearLayout.LayoutParams(Ui.FILL, Ui.WRAP));
+
+        // last 7 days: four short numbers above the chart
+        LinearLayout week = ui.panel(body, compact ? 0.62f : 0.46f, 16);
+        week.addView(ui.caption("LAST 7 DAYS"));
+        LinearLayout stats = ui.row();
+        statDrives = stat(stats, "Drives", 13);
+        statLowest = stat(stats, "Lowest Start", 13);
+        statRate = stat(stats, "Parked, Per Day", 13);
+        statRecharges = stat(stats, "Parked Recharge", 13);
+        LinearLayout.LayoutParams statsParams = new LinearLayout.LayoutParams(Ui.FILL, Ui.WRAP);
+        statsParams.topMargin = ui.dp(10);
+        week.addView(stats, statsParams);
+        chart = new DriveChart(this, palette);
+        LinearLayout.LayoutParams chartParams = new LinearLayout.LayoutParams(Ui.FILL, 0, 1);
+        chartParams.topMargin = ui.dp(12);
+        week.addView(chart, chartParams);
+
+        checkMarks[0] = null;   // refreshData skips the checks when this card isn't shown
+        if (compact) return;
+
+        // checks, with the way into Settings
+        LinearLayout checks = ui.panel(body, 0.26f, 16);
+        LinearLayout header = ui.row();
+        header.addView(ui.caption("CHECKS"), new LinearLayout.LayoutParams(0, Ui.WRAP, 1));
+        header.addView(settingsPill(), new LinearLayout.LayoutParams(Ui.WRAP, ui.dp(44)));
+        checks.addView(header, new LinearLayout.LayoutParams(Ui.FILL, Ui.WRAP));
+        for (int i = 0; i < CHECK_LABELS.length; i++) {
+            LinearLayout row = ui.row();
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            checkMarks[i] = new CheckMark(this);
+            row.addView(checkMarks[i], new LinearLayout.LayoutParams(ui.dp(26), ui.dp(26)));
+            LinearLayout text = ui.column();
+            TextView label = ui.text(CHECK_LABELS[i], 17, palette.ink, true);
+            label.setSingleLine(true);
+            text.addView(label);
+            checkValues[i] = ui.text(Fmt.NONE, 14, palette.muted, false);
+            checkValues[i].setSingleLine(true);
+            checkValues[i].setEllipsize(TextUtils.TruncateAt.END);
+            text.addView(checkValues[i], ui.below(4));
+            LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(0, Ui.WRAP, 1);
+            textParams.leftMargin = ui.dp(12);
+            row.addView(text, textParams);
+            checks.addView(row, new LinearLayout.LayoutParams(Ui.FILL, 0, 1));
+        }
+    }
+
+    private View settingsPill() {
+        LinearLayout pill = ui.row();
+        pill.setGravity(Gravity.CENTER_VERTICAL);
+        pill.setPadding(ui.dp(14), 0, ui.dp(18), 0);
+        ui.background(pill, ui.pill(palette.card, 22));
+        pill.setContentDescription("Settings");
+        pill.addView(new SlidersIcon(this, palette.ink), new LinearLayout.LayoutParams(ui.dp(20), ui.dp(20)));
+        TextView label = ui.text("Settings", 16, palette.ink, false);
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP);
+        labelParams.leftMargin = ui.dp(8);
+        pill.addView(label, labelParams);
+        pill.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { show(SETTINGS); } });
+        return pill;
+    }
+
+    /** A bold value over a short label, taking an equal share of the row. Returns the value. */
+    private TextView stat(LinearLayout parent, String label, int labelSize) {
+        LinearLayout column = ui.column();
+        TextView value = ui.text(Fmt.NONE, 22, palette.ink, true);
+        value.setSingleLine(true);
+        column.addView(value);
+        TextView name = ui.text(label, labelSize, palette.muted, false);
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        column.addView(name, ui.below(5));
+        parent.addView(column, new LinearLayout.LayoutParams(0, Ui.WRAP, 1));
+        return value;
+    }
+
+    // ---- home data -----------------------------------------------------------------
+    private void refreshData() {
+        if (screen != HOME || heroValue == null) return;
+        String status = sh.runRoot("cat " + STATE + "/status 2>/dev/null");
+        String state = Fmt.kv(status, "state"), warn = Fmt.kv(status, "warn");
+        String verifyState = firmware.verifyState;
+        int p = Fmt.parse(Fmt.kv(status, "pct10"), -1);
         boolean paused = "unverified".equals(state) || "unverified".equals(verifyState) || "interface_mismatch".equals(verifyState);
-        if (overrideBtn != null) overrideBtn.setVisibility("unverified".equals(verifyState) ? View.VISIBLE : View.GONE);
-        if (paused && !verified()) {
-            bigLabel.setText("Paused");
-            bigLabel.setTextColor(AMBER);
-            updLabel.setText("interface_mismatch".equals(verifyState)
-                ? "The car's telematics service isn't the one this package was built for, so nothing is read."
-                : "This firmware isn't verified, so nothing is read from the car. See Advanced \u2192 Diagnostics.");
-            parkLabel.setText(""); ctxLabel.setText(""); warnLabel.setText(""); sohLabel.setVisibility(View.GONE);
-            showSoh(-1);
-            return;
-        }
-        if ("disabled".equals(state)) bigLabel.setText("Off");
-        else if (p >= 0) {
-            bigLabel.setText(fmt10(p) + "%");
-            bigLabel.setTextColor(p < warnPct * 10 ? AMBER : GREEN);
-        }
-        else if (state.length() == 0) bigLabel.setText("Waiting…");
-        else bigLabel.setText("No reading");
-        updLabel.setText(upd.length() > 0 ? "12V battery \u00B7 updated " + time(parse(upd, 0))
-                : "No reading yet. If this lasts, see Advanced \u2192 Diagnostics.");
-        // parked time before this drive, and how the 12V changed meanwhile
-        int pMin = parse(kv(status, "parked_min"), -1);
-        int pDrop = parse(kv(status, "parked_drop10"), Integer.MIN_VALUE);
-        int pRate = parse(kv(status, "parked_rate10_day"), Integer.MIN_VALUE);
-        if (pMin >= 0 && pDrop != Integer.MIN_VALUE) {
-            StringBuilder pk = new StringBuilder("Parked ").append(duration(pMin)).append(" before this drive: ");
-            pk.append(pDrop > 0 ? "\u2212" + fmt10(pDrop) + " pts" : pDrop < 0 ? "+" + fmt10(-pDrop) + " pts" : "no change");
-            if (pRate != Integer.MIN_VALUE && pDrop > 0) pk.append("  (\u2212").append(fmt10(pRate)).append("/day)");
-            parkLabel.setText(pk.toString());
-            parkLabel.setTextColor(pDrop >= dropPct * 10 ? AMBER : Color.WHITE);
-        } else {
-            parkLabel.setText("");
-        }
+        if (paused && !firmware.verified()) { showPaused(verifyState); return; }
+
+        int warnPct = config.warnPct, dropPct = config.dropPct;
+        boolean disabled = "disabled".equals(state), noRead = "no_reading".equals(state);
+        boolean reading = p >= 0 && !disabled;
+        boolean low = reading && p < warnPct * 10;
+        boolean attention = reading && (low || warn.length() > 0);
+
+        if (reading) showHero(Fmt.percent(p), low ? palette.warn : palette.ink);
+        else if (disabled) showWord("Off", palette.ink);
+        else if (state.length() == 0) showWord("Waiting…", palette.ink);
+        else showWord("No Reading", palette.ink);
+
+        statusWord.setText(!reading ? "" : low ? "Low" : attention ? "Attention" : "Normal");
+        statusWord.setTextColor(attention ? palette.warn : palette.ink);
+        statusWord.setVisibility(reading ? View.VISIBLE : View.GONE);
+        long now = System.currentTimeMillis() / 1000, updated = Fmt.parseL(Fmt.kv(status, "updated"), 0);
+        updatedText.setText(updated > 0 ? "Updated " + Fmt.age(now, updated) : "");
+        String detail = disabled ? "Monitoring is off. Turn it on in Settings."
+                : noRead ? "The 12V value couldn't be decoded. Check Settings → Sensor."
+                : state.length() == 0 ? "No reading yet. If this lasts, see Settings → Diagnostics." : "";
+        detailText.setText(detail);
+        detailText.setVisibility(detail.length() > 0 ? View.VISIBLE : View.GONE);
+        gauge.setVisibility(reading ? View.VISIBLE : View.GONE);
+        if (reading) gauge.setValue(p, warnPct);
+
         // context: main battery charge and outside temperature
-        int hv = parse(kv(status, "hv10"), -1);
-        int tc = parse(kv(status, "temp_c"), Integer.MIN_VALUE);
-        StringBuilder cx = new StringBuilder();
-        if (hv >= 0) cx.append("Main battery ").append(fmt10(hv)).append("%");
-        if (tc != Integer.MIN_VALUE) {
-            if (cx.length() > 0) cx.append("  \u00B7  ");
-            cx.append("Outside ").append(Math.round(tc * 9 / 5f + 32)).append("\u00B0F");
-        }
-        ctxLabel.setText(cx.toString());
-        boolean noRead = "no_reading".equals(state);
-        sohLabel.setText(noRead ? "The 12V value couldn't be decoded. Check Advanced settings." : "");
-        sohLabel.setVisibility(noRead ? View.VISIBLE : View.GONE);
-        int sohNow = readSoh();
-        if (sohNow < 0) sohNow = parse(soh, -1);   // fall back to the service's last value
-        showSoh(sohNow);
-        warnLabel.setText(warn.length() > 0 ? "\u26A0 " + warn : "");
-        warnLabel.setTextColor(AMBER);
-        warnLabel.setVisibility(warn.length() > 0 ? View.VISIBLE : View.GONE);
+        int hv = Fmt.parse(Fmt.kv(status, "hv10"), -1);
+        int tc = Fmt.parse(Fmt.kv(status, "temp_c"), Integer.MIN_VALUE);
+        mainBattery.setText(hv >= 0 ? Fmt.percent(hv) : Fmt.NONE);
+        outside.setText(tc != Integer.MIN_VALUE ? Math.round(tc * 9 / 5f + 32) + "°F" : Fmt.NONE);
 
-        List<long[]> drives = loadDrives(status);
-        chart.setData(drives.size() > 30 ? drives.subList(drives.size() - 30, drives.size()) : drives, warnPct * 10, dropPct * 10);
-        sumLabel.setText(summary(drives));
-    }
+        // the chart and the last 7 days
+        long minOff = Math.max(60, sh.readInt("min_off_s", 600));
+        List<long[]> finished = Drives.finished(sh.runRoot("cat " + STATE + "/sessions 2>/dev/null"), minOff);
+        List<long[]> drives = Drives.withCurrent(finished, status, minOff);
+        boolean endsNow = !drives.isEmpty() && updated > 0 && drives.get(drives.size() - 1)[1] == updated;
+        chart.setData(drives.size() > 30 ? drives.subList(drives.size() - 30, drives.size()) : drives,
+                warnPct * 10, dropPct * 10, endsNow);
+        showSummary(Drives.summary(drives, now));
 
-    /**
-     * Drives as {start_epoch, end_epoch, start_pct10, end_pct10}, oldest first:
-     * finished drives from 'sessions' plus the current one. Drives separated
-     * by a stop shorter than min_off_s (default 10 min) are merged, which also
-     * tidies history recorded before short stops were ignored.
-     */
-    List<long[]> loadDrives(String status) {
-        List<long[]> out = new ArrayList<long[]>();
-        long minOff = Math.max(60, readInt("min_off_s", 600));
-        for (String line : runRoot("cat " + STATE + "/sessions 2>/dev/null").split("\n")) {
-            String[] f = line.trim().split("\\s+");
-            if (f.length < 4) continue;
-            long st = parseL(f[0], 0); int min = parse(f[1], -1), sp = parse(f[2], -1), ep = parse(f[3], -1);
-            if (st <= 0 || min < 0 || sp < 0 || ep < 0) continue;
-            add(out, new long[] { st, st + min * 60L, sp, ep }, minOff);
-        }
-        String[] ss = kv(status, "session_start").split(" ");
-        long cst = ss.length > 0 ? parseL(ss[0], 0) : 0;
-        int csp = ss.length > 1 ? parse(ss[1], -1) : -1;
-        int cur = parse(kv(status, "pct10"), -1);
-        long upd = parseL(kv(status, "updated"), 0);
-        if (cst > 0 && csp >= 0 && cur >= 0 && upd >= cst
-                && (out.isEmpty() || cst > out.get(out.size() - 1)[0])) {
-            add(out, new long[] { cst, upd, csp, cur }, minOff);
-        }
-        return out;
-    }
+        if (checkMarks[0] == null) return;   // split view: no checks card
 
-    static void add(List<long[]> l, long[] d, long minOff) {
-        if (!l.isEmpty()) {
-            long[] p = l.get(l.size() - 1);
-            if (d[0] - p[1] < minOff && d[0] >= p[0]) { p[1] = Math.max(p[1], d[1]); p[3] = d[3]; return; }
-        }
-        l.add(d);
-    }
+        // 12V when this drive started
+        String[] ss = Fmt.kv(status, "session_start").split(" ");
+        int startPct = ss.length > 1 ? Fmt.parse(ss[1], -1) : -1;
+        if (startPct < 0) startPct = p;
+        if (startPct < 0) setCheck(0, CheckMark.UNKNOWN, "No reading yet");
+        else if (startPct < warnPct * 10) setCheck(0, CheckMark.FAIL, "Below " + warnPct + "%");
+        else setCheck(0, CheckMark.PASS, "Above " + warnPct + "%");
 
-    /** Last-7-days summary: lowest start, parked drain per day, parked recharges. */
-    String summary(List<long[]> drives) {
-        long now = System.currentTimeMillis() / 1000, from = now - 7 * 86400L;
-        int lowest = Integer.MAX_VALUE, n = 0, recharges = 0;
-        long parkedMin = 0, parkedDrop = 0;
-        for (int i = 0; i < drives.size(); i++) {
-            long[] d = drives.get(i);
-            if (d[0] < from) continue;
-            n++;
-            lowest = (int) Math.min(lowest, d[2]);
-            if (i == 0) continue;
-            long[] p = drives.get(i - 1);
-            long gap = (d[0] - p[1]) / 60;
-            if (gap < 60) continue;                         // ignore short parks for the rate
-            long drop = p[3] - d[2];                        // positive = fell while parked
-            if (drop <= -10) recharges++;                   // rose 1+ pt: the car topped it up
-            parkedMin += gap; parkedDrop += drop;
-        }
-        if (n == 0) return "No drives recorded yet.";
-        StringBuilder b = new StringBuilder();
-        b.append(n).append(n == 1 ? " drive" : " drives").append(", lowest start ").append(fmt10(lowest)).append("%\n");
-        if (parkedMin >= 60) {
-            long rate = parkedDrop * 1440 / parkedMin;      // tenths of a point per day
-            b.append("Parked: ").append(rate > 0 ? "\u2212" + fmt10((int) rate) : rate < 0 ? "+" + fmt10((int) -rate) : "0.0")
-             .append(" pts/day on average\n");
+        // parked time before this drive, and how the 12V changed meanwhile
+        int pMin = Fmt.parse(Fmt.kv(status, "parked_min"), -1);
+        int pDrop = Fmt.parse(Fmt.kv(status, "parked_drop10"), Integer.MIN_VALUE);
+        if (pMin >= 0 && pDrop != Integer.MIN_VALUE) {
+            String change = pDrop > 0 ? Fmt.MINUS + Fmt.points(pDrop) : pDrop < 0 ? "+" + Fmt.points(pDrop) : "No change";
+            setCheck(1, pDrop >= dropPct * 10 ? CheckMark.FAIL : CheckMark.PASS, change + " in " + Fmt.span(pMin));
         } else {
-            b.append("Parked: not enough parked time yet\n");
+            setCheck(1, CheckMark.UNKNOWN, "Not enough data");
         }
-        b.append("Recharged while parked: ").append(recharges).append(recharges == 1 ? " time" : " times");
-        return b.toString();
+
+        // did the newest long drive hold or raise the 12V?
+        long[] last = Drives.lastLong(finished);
+        if (last == null) {
+            setCheck(2, CheckMark.UNKNOWN, "No " + Drives.MIN_RECOVERY_MINUTES + "-min drive yet");
+        } else {
+            int change = (int) (last[3] - last[2]);
+            if (change < 0) setCheck(2, CheckMark.FAIL, "Dropped " + Fmt.points(change));
+            else setCheck(2, CheckMark.PASS, change == 0 ? "Held steady" : "Recovered +" + Fmt.points(change));
+        }
+
+        // HV battery health: read live, not logged or monitored. Good >= 90, Fair 75-89, Low < 75.
+        int soh = firmware.readSoh();
+        if (soh < 0) soh = Fmt.parse(Fmt.kv(status, "soh_raw"), -1);   // fall back to the service's last value
+        if (soh < 0) setCheck(3, CheckMark.UNKNOWN, Fmt.NONE);
+        else if (soh >= 90) setCheck(3, CheckMark.PASS, soh + "%, Good");
+        else if (soh >= 75) setCheck(3, CheckMark.CAUTION, soh + "%, Fair");
+        else setCheck(3, CheckMark.FAIL, soh + "%, Low");
+
+        showFirmwareCheck(verifyState);
     }
 
-    // SOH: tm_hscan_service 214 (0xd6) returns one raw byte, a health index (100 = new).
-    int readSoh() {
-        if (txSoh <= 0) return -1;                       // not verified on this firmware: don't call
-        String r = runRoot("service call tm_hscan_service " + txSoh).trim();
-        int i = r.indexOf("Parcel(");
-        if (i < 0) return -1;
-        String[] w = r.substring(i + 7).trim().split("\\s+");
-        if (w.length < 2 || !"00000000".equals(w[0])) return -1;
-        try { long v = Long.parseLong(w[1], 16); return v > 0 && v <= 100 ? (int) v : -1; } catch (Exception e) { return -1; }
+    /** Nothing is read on firmware that couldn't be verified. */
+    private void showPaused(String verifyState) {
+        showWord("Paused", palette.warn);
+        statusWord.setText(""); statusWord.setVisibility(View.GONE);
+        updatedText.setText("");
+        detailText.setText("interface_mismatch".equals(verifyState)
+                ? "The car's telematics service isn't the one this package was built for, so nothing is read."
+                : "This firmware isn't verified, so nothing is read from the car. See Settings → Diagnostics.");
+        detailText.setVisibility(View.VISIBLE);
+        gauge.setVisibility(View.GONE);
+        mainBattery.setText(Fmt.NONE); outside.setText(Fmt.NONE);
+        statDrives.setText(Fmt.NONE); statLowest.setText(Fmt.NONE); statRate.setText(Fmt.NONE); statRecharges.setText(Fmt.NONE);
+        chart.setData(new java.util.ArrayList<long[]>(), config.warnPct * 10, config.dropPct * 10, false);
+        if (checkMarks[0] == null) return;
+        for (int i = 0; i < 4; i++) setCheck(i, CheckMark.UNKNOWN, Fmt.NONE);
+        showFirmwareCheck(verifyState);
     }
 
-    // green >= 90, amber 75-89, red < 75, gray if unknown
-    void showSoh(int v) {
-        int bg, fg; String text;
-        if (v < 0)       { bg = Color.rgb(42, 47, 54);  fg = MUTED;                text = "--"; }
-        else if (v >= 90){ bg = Color.rgb(22, 60, 38);  fg = GREEN;                text = v + "%  Good"; }
-        else if (v >= 75){ bg = Color.rgb(70, 50, 18);  fg = AMBER;                text = v + "%  Fair"; }
-        else             { bg = Color.rgb(80, 28, 28);  fg = Color.rgb(255, 120, 110); text = v + "%  Low"; }
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(bg);
-        d.setCornerRadius(dp(10));
-        d.setStroke(dp(2), fg);
-        sohBox.setBackgroundDrawable(d);
-        sohTitle.setTextColor(fg);
-        sohValue.setTextColor(fg);
-        sohValue.setText(text);
+    private void showSummary(Drives.Summary s) {
+        statDrives.setText(String.valueOf(s.count));
+        statLowest.setText(s.count > 0 ? Fmt.percent(s.lowest10) : Fmt.NONE);
+        statRate.setText(!s.hasRate ? Fmt.NONE
+                : s.rate10 > 0 ? Fmt.MINUS + Fmt.fmt10(s.rate10)
+                : s.rate10 < 0 ? "+" + Fmt.fmt10(-s.rate10) : "0.0");
+        statRecharges.setText(String.valueOf(s.recharges));
     }
 
-    void readNow() {
-        if (txSoc <= 0) { rawLabel.setText("Not verified on this firmware, so nothing was read."); return; }
-        String r = runRoot("service call tm_hscan_service " + txSoc).trim();
-        String shown = r;
+    private void showFirmwareCheck(String verifyState) {
+        if ("checking".equals(verifyState)) setCheck(4, CheckMark.UNKNOWN, "Checking");
+        else if ("override".equals(verifyState)) setCheck(4, CheckMark.CAUTION, "Manual override");
+        else if ("unverified".equals(verifyState)) setCheck(4, CheckMark.FAIL, "Not verified");
+        else if ("interface_mismatch".equals(verifyState)) setCheck(4, CheckMark.FAIL, "Different service");
+        else setCheck(4, CheckMark.PASS, "Verified");
+    }
+
+    private void setCheck(int row, int state, String value) {
+        checkMarks[row].setState(state);
+        checkValues[row].setText(value);
+    }
+
+    private void showHero(String value, int color) {
+        heroValue.setTextSize(72); heroValue.setText(value); heroValue.setTextColor(color);
+    }
+    private void showWord(String value, int color) {
+        heroValue.setTextSize(48); heroValue.setText(value); heroValue.setTextColor(color);
+    }
+
+    // ---- settings -------------------------------------------------------------------
+    private interface Pick { void pick(int index); }
+
+    private void buildSettings() {
+        LinearLayout body = ui.row();
+        content.addView(body, new FrameLayout.LayoutParams(Ui.FILL, Ui.FILL));
+
+        // warnings
+        LinearLayout warnings = ui.panel(body, 0.38f, 0);
+        warnings.addView(ui.caption("WARNINGS"));
+        LinearLayout monitorRow = settingRow(warnings, false);
+        monitorRow.addView(ui.text("Monitor 12V", 17, palette.ink, true), new LinearLayout.LayoutParams(0, Ui.WRAP, 1));
+        monitorSwitch = new ToggleSwitch(this, palette);
+        monitorSwitch.setOn(config.enabled);
+        // the whole row is the touch target, which is easier to hit in a car
+        monitorRow.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            config.enabled = !config.enabled; monitorSwitch.setOn(config.enabled); scheduleSave(); } });
+        monitorRow.addView(monitorSwitch, new LinearLayout.LayoutParams(ui.dp(64), ui.dp(36)));
+
+        LinearLayout warnRow = settingRow(warnings, true);
+        warnRow.addView(labelled("Warn Below", "At car start"), new LinearLayout.LayoutParams(0, Ui.WRAP, 1));
+        warnValue = addStepper(warnRow, "warning level", new Pick() { public void pick(int delta) {
+            config.warnPct = Config.step(config.warnPct, delta, 30, 90); refreshSettingValues(); scheduleSave(); } });
+
+        LinearLayout dropRow = settingRow(warnings, true);
+        dropRow.addView(labelled("Warn on Drop", "While parked"), new LinearLayout.LayoutParams(0, Ui.WRAP, 1));
+        dropValue = addStepper(dropRow, "parked drop limit", new Pick() { public void pick(int delta) {
+            config.dropPct = Config.step(config.dropPct, delta, 5, 40); refreshSettingValues(); scheduleSave(); } });
+
+        LinearLayout popupRow = settingRow(warnings, true);
+        popupRow.addView(ui.text("Pop-Up", 17, palette.ink, true), new LinearLayout.LayoutParams(0, Ui.WRAP, 1));
+        popupRow.addView(segments(new String[] { "Warnings Only", "Every Start" }, config.toastStart ? 1 : 0, false,
+            new Pick() { public void pick(int i) { config.toastStart = i == 1; scheduleSave(); } }));
+        refreshSettingValues();
+
+        // sensor
+        LinearLayout sensor = ui.panel(body, 0.31f, 16);
+        sensor.addView(ui.caption("SENSOR"));
+        int intervalIndex = -1;
+        for (int i = 0; i < Config.INTERVALS.length; i++) if (Config.INTERVALS[i] == config.interval) intervalIndex = i;
+        sensor.addView(ui.spacer());
+        addOption(sensor, "Read Every", segments(new String[] { "1 min", "5 min", "15 min" }, intervalIndex, true,
+            new Pick() { public void pick(int i) { config.interval = Config.INTERVALS[i]; scheduleSave(); } }));
+        sensor.addView(ui.spacer());
+        addOption(sensor, "Decode", segments(Config.DECODE, config.decode, true,
+            new Pick() { public void pick(int i) { config.decode = i; scheduleSave(); } }));
+        sensor.addView(ui.spacer());
+        addOption(sensor, "Scale", segments(new String[] { "×1", "×0.5" }, config.scaleX10 == 10 ? 0 : 1, true,
+            new Pick() { public void pick(int i) { config.scaleX10 = i == 0 ? 10 : 5; scheduleSave(); } }));
+        sensor.addView(ui.spacer());
+        readButton = ui.text("Read Sensor Now", 17, palette.onAccent, true);
+        readButton.setGravity(Gravity.CENTER);
+        readButton.setSingleLine(true);
+        readButton.setEllipsize(TextUtils.TruncateAt.END);
+        ui.background(readButton, ui.pill(palette.accent, 28));
+        readButton.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { readNow(); } });
+        sensor.addView(readButton, new LinearLayout.LayoutParams(Ui.FILL, ui.dp(56)));
+
+        // tools
+        LinearLayout tools = ui.panel(body, 0.31f, 16);
+        tools.addView(ui.caption("TOOLS"));
+        addToolRow(tools, 10,
+            tile("Diagnostics", palette.ink, new Runnable() { public void run() { showDiagnostics(); } }),
+            tile("Restart Monitor", palette.ink, new Runnable() { public void run() { restartService(); } }));
+        addToolRow(tools, 10,
+            tile("Test Run (10 s)", palette.ink, new Runnable() { public void run() { testRun(); } }),
+            tile("Export to USB", palette.ink, new Runnable() { public void run() { exportToUsb(); } }));
+        addToolRow(tools, 10,
+            tile("Share Data", palette.ink, new Runnable() { public void run() { showShareSteps(); } }),
+            tile("Clear History", palette.danger, new Runnable() { public void run() { confirmClearHistory(); } }));
+        overrideTile = tile("Unverified Firmware: Use Built-In Numbers…", palette.warn,
+            new Runnable() { public void run() { confirmOverride(); } });
+        LinearLayout.LayoutParams overrideParams = new LinearLayout.LayoutParams(Ui.FILL, 0, 1);
+        overrideParams.topMargin = ui.dp(10);
+        tools.addView(overrideTile, overrideParams);
+        refreshOverrideTile();
+    }
+
+    /** A row that shares the card's spare height, with a hairline above it when asked. */
+    private LinearLayout settingRow(LinearLayout parent, boolean rule) {
+        if (rule) parent.addView(ui.hairline());
+        LinearLayout row = ui.row();
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        parent.addView(row, new LinearLayout.LayoutParams(Ui.FILL, 0, 1));
+        return row;
+    }
+
+    private View labelled(String title, String subtitle) {
+        LinearLayout text = ui.column();
+        text.addView(ui.text(title, 17, palette.ink, true));
+        text.addView(ui.text(subtitle, 14, palette.muted, false), ui.below(4));
+        return text;
+    }
+
+    /** Minus, value, plus. The handler's index is -1 or +1. Returns the value's view. */
+    private TextView addStepper(LinearLayout row, String name, final Pick onStep) {
+        row.addView(round("−", "Lower " + name, new View.OnClickListener() { public void onClick(View v) { onStep.pick(-1); } }),
+            new LinearLayout.LayoutParams(ui.dp(56), ui.dp(56)));
+        TextView value = ui.text("", 22, palette.ink, true);
+        value.setGravity(Gravity.CENTER);
+        value.setSingleLine(true);
+        row.addView(value, new LinearLayout.LayoutParams(ui.dp(84), Ui.WRAP));
+        row.addView(round("+", "Raise " + name, new View.OnClickListener() { public void onClick(View v) { onStep.pick(1); } }),
+            new LinearLayout.LayoutParams(ui.dp(56), ui.dp(56)));
+        return value;
+    }
+
+    private View round(String symbol, String description, View.OnClickListener listener) {
+        TextView button = ui.text(symbol, 24, palette.ink, false);
+        button.setGravity(Gravity.CENTER);
+        button.setContentDescription(description);
+        ui.background(button, ui.pill(palette.card, 28));
+        button.setOnClickListener(listener);
+        return button;
+    }
+
+    private void refreshSettingValues() {
+        warnValue.setText(config.warnPct + "%");
+        dropValue.setText(config.dropPct + " pts");
+    }
+
+    private void addOption(LinearLayout parent, String label, View control) {
+        parent.addView(ui.text(label, 14, palette.muted, false));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(Ui.FILL, Ui.WRAP);
+        params.topMargin = ui.dp(4);
+        parent.addView(control, params);
+    }
+
+    /** A row of choices with one selected. stretch: the choices share the row's width. */
+    private LinearLayout segments(String[] labels, int selected, boolean stretch, final Pick pick) {
+        LinearLayout box = ui.row();
+        box.setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4));
+        ui.background(box, ui.rounded(palette.card, 28));
+        final TextView[] items = new TextView[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            TextView item = ui.text(labels[i], 15, palette.ink, false);
+            item.setGravity(Gravity.CENTER);
+            item.setSingleLine(true);
+            if (!stretch) item.setPadding(ui.dp(16), 0, ui.dp(16), 0);
+            item.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                styleSegments(items, index); pick.pick(index); } });
+            box.addView(item, stretch ? new LinearLayout.LayoutParams(0, ui.dp(48), 1) : new LinearLayout.LayoutParams(Ui.WRAP, ui.dp(48)));
+            items[i] = item;
+        }
+        styleSegments(items, selected);
+        return box;
+    }
+
+    private void styleSegments(TextView[] items, int selected) {
+        for (int i = 0; i < items.length; i++) {
+            boolean on = i == selected;
+            items[i].setSelected(on);
+            items[i].setTextColor(on ? palette.onAccent : palette.ink);
+            ui.background(items[i], on ? ui.pill(palette.accent, 24) : null);
+        }
+    }
+
+    private void addToolRow(LinearLayout tools, int topMargin, View left, View right) {
+        LinearLayout row = ui.row();
+        LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(Ui.FILL, 0, 1);
+        rowParams.topMargin = ui.dp(topMargin);
+        row.addView(left, new LinearLayout.LayoutParams(0, Ui.FILL, 1));
+        LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(0, Ui.FILL, 1);
+        rightParams.leftMargin = ui.dp(10);
+        row.addView(right, rightParams);
+        tools.addView(row, rowParams);
+    }
+
+    private TextView tile(String label, int color, final Runnable action) {
+        TextView tile = ui.text(label, 17, color, false);
+        tile.setGravity(Gravity.CENTER);
+        tile.setPadding(ui.dp(8), 0, ui.dp(8), 0);
+        ui.background(tile, ui.pill(palette.card, 14));
+        tile.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { action.run(); } });
+        return tile;
+    }
+
+    private void refreshOverrideTile() {
+        if (overrideTile != null) overrideTile.setVisibility("unverified".equals(firmware.verifyState) ? View.VISIBLE : View.GONE);
+    }
+
+    private void scheduleSave() {
+        saveDirty = true;
+        handler.removeCallbacks(saveTask);
+        handler.postDelayed(saveTask, 500);
+    }
+
+    private void flushSave() {
+        handler.removeCallbacks(saveTask);
+        if (!saveDirty) return;
+        saveDirty = false;
+        String r = config.save(sh);
+        if (r.startsWith("ERR")) toast("Save failed: " + r);
+    }
+
+    private void readNow() {
+        if (firmware.txSoc <= 0) { readButton.setText("Not Verified"); return; }
+        String r = sh.runRoot("service call tm_hscan_service " + firmware.txSoc).trim();
         int i = r.indexOf("Parcel(");
         if (i >= 0) {
             String[] w = r.substring(i + 7).trim().split("\\s+");
             if (w.length >= 2 && "00000000".equals(w[0])) {
-                try { shown = "Sensor now: " + Long.parseLong(w[1], 16) + "%   (raw " + w[1] + ")"; } catch (Exception e) { }
+                try {
+                    readButton.setText("Sensor Now: " + Long.parseLong(w[1], 16) + "% (raw " + w[1] + ")");
+                    return;
+                } catch (Exception e) { }
             }
         }
-        rawLabel.setText(shown);
+        readButton.setText("No Reading");
+        toast(r);
     }
 
     // ---- firmware verification ------------------------------------------------
-    // Transaction numbers can shift between firmware builds, so they're looked
-    // up BY NAME in this firmware's own ITM_HSCANService definition and saved
-    // (with the firmware id) for the service. Same rules as verify() in
-    // svc/watchdog.sh; hand-verified builds are listed in known_firmware.txt.
-    static final String IFACE = "com.hkmc.telematics.hscan.tm_interface.ITM_HSCANService";
-    static final String KNOWN_FILE = "/data/nemesis/apps/battery.watchdog/known_firmware.txt";
-    String fw = "", verifyState = "checking", verifySource = "";
-    int txSoc = -1, txHv = -1, txSoh = -1;
-    /**
-     * Read-only getters logged alongside the 12V reading, raw, until their values
-     * are understood: the 12V battery sensor's state, invalid and error flags, the
-     * Auxiliary Battery Saver option, and HV charging status. Only ever taken from
-     * a lookup by name on this firmware (never from known_firmware.txt or an
-     * override), so a number from another build can't be called by mistake.
-     */
-    static final String[][] EXTRAS = {
-        { "sns_state", "getBATSNSRState" }, { "sns_invalid", "getBATSNSRInvalid" },
-        { "sns_error", "getBATSNSRError" }, { "aux_opt", "get_BAT_AuxBattOpt" },
-        { "chg_status", "getChargingStatus" } };
-    final Map<String, Integer> txExtra = new HashMap<String, Integer>();
-
-    void startVerification() {
+    private void startVerification() {
         new Thread(new Runnable() { public void run() {
-            final String result = verify();
-            handler.post(new Runnable() { public void run() { verifyState = result; refreshData(); } });
+            final String result = firmware.verify();
+            handler.post(new Runnable() { public void run() {
+                firmware.verifyState = result;
+                refreshOverrideTile();
+                refreshData();
+            } });
         } }).start();
     }
 
-    /** Returns resolved | saved | known_firmware | override | interface_mismatch | unverified. */
-    String verify() {
-        txSoc = txHv = txSoh = -1; txExtra.clear();
-        fw = runRoot("getprop ro.build.version.incremental").trim();
-        String svcList = runRoot("service list 2>/dev/null");
-        if (!svcList.contains("tm_hscan_service: [" + IFACE + "]")) return "interface_mismatch";
-
-        // 1. numbers already resolved (or overridden) for exactly this firmware
-        String saved = runRoot("cat " + STATE + "/txn 2>/dev/null");
-        if (fw.length() > 0 && fw.equals(kv(saved, "fw")) && parse(kv(saved, "soc"), -1) > 0) {
-            txSoc = parse(kv(saved, "soc"), -1); txHv = parse(kv(saved, "hv"), -1); txSoh = parse(kv(saved, "soh"), -1);
-            verifySource = kv(saved, "source");
-            if ("manual-override".equals(verifySource)) return "override";
-            for (String[] x : EXTRAS) { int n = parse(kv(saved, x[0]), -1); if (n > 0) txExtra.put(x[0], n); }
-            // saved by a version that didn't look up the extra getters: look them up once
-            if (kv(saved, "ext").length() == 0 && verifySource.startsWith("/")) {
-                int soc = txSoc, hv = txHv, soh = txSoh;
-                String r = resolveByName(new StringBuilder());
-                if (r != null && txSoc == soc) { verifySource = r; saveTxn(r); }
-                else { txSoc = soc; txHv = hv; txSoh = soh; saveTxn(verifySource); }   // keep the old numbers, mark as checked
-            }
-            return "resolved (saved earlier)";
-        }
-
-        // 2. resolve by name from the firmware's own interface definition.
-        //    Skipped if this app version already searched this firmware and found nothing.
-        String missKey = fw + " " + appVersion();
-        if (!missKey.equals(runRoot("cat " + STATE + "/resolve_miss 2>/dev/null").trim())) {
-            StringBuilder lg = new StringBuilder();
-            String r = resolveByName(lg);
-            runRoot("mkdir -p " + STATE);
-            writeStateFile("resolve.log", lg.toString());
-            if (r != null) { verifySource = r; saveTxn(r); return "resolved"; }
-            writeStateFile("resolve_miss", missKey + "\n");
-        }
-
-        // 3. hand-verified firmware
-        // one line per build: <fw> <soc> <hv> <soh>  # comment ("-" = not available)
-        for (String line : runRoot("cat " + KNOWN_FILE + " 2>/dev/null").split("\n")) {
-            String l = line.trim();
-            if (l.length() == 0 || l.startsWith("#")) continue;
-            String[] f = l.split("\\s+");
-            if (f.length < 2 || !f[0].equals(fw) || parse(f[1], -1) <= 0) continue;
-            txSoc = parse(f[1], -1);
-            txHv = f.length > 2 ? parse(f[2], -1) : -1;
-            txSoh = f.length > 3 ? parse(f[3], -1) : -1;
-            verifySource = "known_firmware.txt";
-            return "known_firmware";
-        }
-        return "unverified";
+    @SuppressWarnings("deprecation")
+    private AlertDialog.Builder dialog() {
+        return new AlertDialog.Builder(this, palette.dark ? AlertDialog.THEME_HOLO_DARK : AlertDialog.THEME_HOLO_LIGHT);
     }
 
-    /** This build's version name (stamped into the manifest at build time). */
-    String appVersion() {
-        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
-        catch (Exception e) { return "?"; }
-    }
-    static final String[] SEARCH_DIRS = { "/system/framework", "/system/app", "/system/priv-app",
-            "/vendor/framework", "/vendor/app", "/system/vendor/app", "/system/vendor/framework" };
-    static final byte[] NEEDLE = "tm_interface/ITM_HSCANService$Stub;".getBytes();
-
-    /**
-     * Finds ITM_HSCANService$Stub in the firmware and reads its transaction codes.
-     * Pass 1: .odex/.dex files, searched in 1 MiB chunks, parsed only on a hit.
-     * Pass 2: classes*.dex inside .jar/.apk (builds that aren't odexed).
-     * Returns the source path, or null. Everything it tries goes into {@code lg}.
-     */
-    String resolveByName(StringBuilder lg) {
-        java.util.List<File> plain = new java.util.ArrayList<File>(), zips = new java.util.ArrayList<File>();
-        for (String dname : SEARCH_DIRS) collect(new File(dname), plain, zips, 2);
-        lg.append("searched ").append(plain.size()).append(" odex/dex and ").append(zips.size()).append(" jar/apk files\n");
-        for (File f : plain) {
-            try {
-                boolean hit;
-                try { hit = TxnResolver.fileContains(f, NEEDLE); }
-                catch (java.io.IOException e) { File c = viaRoot(f); hit = c != null && TxnResolver.fileContains(c, NEEDLE); if (!hit && c != null) c.delete(); }
-                if (!hit) continue;
-                lg.append("found Stub in ").append(f).append("\n");
-                Map<String, Integer> m;
-                try { m = TxnResolver.transactions(f, TxnResolver.STUB); }
-                catch (java.io.IOException e) { File c = viaRoot(f); m = TxnResolver.transactions(c, TxnResolver.STUB); c.delete(); }
-                lg.append("  ").append(m.size()).append(" transactions; getBatSoc=").append(m.get("getBatSoc")).append("\n");
-                if (useMap(m)) return f.getPath();
-            } catch (Throwable t) {
-                lg.append("  ").append(f).append(": ").append(t).append("\n");
-            }
-        }
-        for (File f : zips) {
-            try {
-                Map<String, Integer> m = TxnResolver.transactionsInZip(f, TxnResolver.STUB, NEEDLE);
-                if (m.isEmpty()) continue;
-                lg.append("found Stub in ").append(f).append(": ").append(m.size()).append(" transactions; getBatSoc=").append(m.get("getBatSoc")).append("\n");
-                if (useMap(m)) return f.getPath();
-            } catch (Throwable t) {
-                lg.append("  ").append(f).append(": ").append(t).append("\n");
-            }
-        }
-        lg.append("not found\n");
-        return null;
-    }
-
-    boolean useMap(Map<String, Integer> m) {
-        Integer soc = m.get("getBatSoc");
-        if (soc == null) return false;
-        Integer hv = m.get("remainBatteryPercentage"), soh = m.get("getXEV_Bms_GDS_SOH");
-        txSoc = soc; txHv = hv == null ? -1 : hv; txSoh = soh == null ? -1 : soh;
-        txExtra.clear();
-        for (String[] x : EXTRAS) { Integer n = m.get(x[1]); if (n != null && n > 0) txExtra.put(x[0], n); }
-        return true;
-    }
-
-    static void collect(File dir, java.util.List<File> plain, java.util.List<File> zips, int depth) {
-        File[] l = dir.listFiles();
-        if (l == null) return;
-        for (File f : l) {
-            String n = f.getName().toLowerCase(Locale.US);
-            if (f.isDirectory()) { if (depth > 1) collect(f, plain, zips, depth - 1); }
-            else if (n.endsWith(".odex") || n.endsWith(".dex")) plain.add(f);
-            else if (n.endsWith(".jar") || n.endsWith(".apk")) zips.add(f);
-        }
-    }
-
-    /** Copy a file this app can't read into its cache via root; null on failure. */
-    File viaRoot(File f) {
-        File tmp = new File(getCacheDir(), "resolve.bin");
-        runRoot("cat '" + f.getPath() + "' > '" + tmp.getAbsolutePath() + "' && chmod 644 '" + tmp.getAbsolutePath() + "'");
-        return tmp.length() > 0 ? tmp : null;
-    }
-
-    void writeStateFile(String name, String content) {
-        writeRoot(STATE + "/" + name, content);
-    }
-
-    void saveTxn(String source) {
-        // plain echo: KitKat has no printf binary and mksh R43 has no printf builtin
-        String f = STATE + "/txn";
-        runRoot("mkdir -p " + STATE
-            + "; echo 'fw=" + fw + "' > " + f
-            + "; echo 'soc=" + txSoc + "' >> " + f
-            + "; echo 'hv=" + (txHv > 0 ? txHv : "") + "' >> " + f
-            + "; echo 'soh=" + (txSoh > 0 ? txSoh : "") + "' >> " + f
-            + extrasEcho(f, source)
-            + "; echo 'source=" + source + "' >> " + f);
-    }
-
-    /** the extra getters' lines for the txn file; none for an override (and ext=1: looked up) */
-    String extrasEcho(String f, String source) {
-        if ("manual-override".equals(source)) return "";
-        StringBuilder b = new StringBuilder();
-        for (String[] x : EXTRAS) {
-            Integer n = txExtra.get(x[0]);
-            b.append("; echo '").append(x[0]).append('=').append(n == null ? "" : String.valueOf(n)).append("' >> ").append(f);
-        }
-        return b.append("; echo 'ext=1' >> ").append(f).toString();
-    }
-
-    void confirmOverride() {
-        new AlertDialog.Builder(this).setTitle("Use built-in numbers on this firmware?")
-            .setMessage("This firmware (" + fw + ") hasn't been verified, and Battery Watchdog couldn't confirm the "
+    private void confirmOverride() {
+        dialog().setTitle("Use built-in numbers on this firmware?")
+            .setMessage("This firmware (" + firmware.fw + ") hasn't been verified, and Battery Watchdog couldn't confirm the "
                 + "transaction numbers by name. On a different firmware the same numbers can reach a different "
                 + "function, including ones that reset or change settings.\n\nOnly continue if you've run the USB "
                 + "probe on this car and its txn 137 / 74 / 214 values look like a 12V %, a main battery %, and a "
                 + "health index (see docs/TECHNICAL.md).")
             .setPositiveButton("I've checked, use them", new DialogInterface.OnClickListener() {
                 public void onClick(DialogInterface di, int w) {
-                    txSoc = 137; txHv = 74; txSoh = 214; saveTxn("manual-override");
-                    verifyState = "override"; verifySource = "manual-override";
-                    toast("Saved. The monitor starts within a minute."); refreshData();
+                    firmware.applyOverride();
+                    toast("Saved. The monitor starts within a minute.");
+                    refreshOverrideTile(); refreshData();
                 } })
             .setNegativeButton("Cancel", null).show();
     }
-
-    boolean verified() { return txSoc > 0; }
 
     // ---- one-time, opt-in request to share data ---------------------------------
     // Shown once, the first time the app opens with verified readings (on an
     // unverified firmware nothing is collected, so it waits). Nothing is ever sent
     // from the car: it only explains how to export and share, if the owner wants to.
-    static final String PREFS = "ui", ASKED_SHARE = "share_asked";
-    int shareTries;
-    final Runnable askShare = new Runnable() { public void run() { maybeAskToShare(); } };
+    private static final String PREFS = "ui", ASKED_SHARE = "share_asked";
+    private int shareTries;
+    private final Runnable askShare = new Runnable() { public void run() { maybeAskToShare(); } };
 
-    void maybeAskToShare() {
+    private void maybeAskToShare() {
         if (isFinishing()) return;
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (p.getBoolean(ASKED_SHARE, false)) return;
-        if (!verified()) {
+        if (!firmware.verified()) {
             // still checking: look again shortly; paused: ask on a later start
-            if ("checking".equals(verifyState) && ++shareTries < 20) handler.postDelayed(askShare, 3000);
+            if ("checking".equals(firmware.verifyState) && ++shareTries < 20) handler.postDelayed(askShare, 3000);
             return;
         }
         p.edit().putBoolean(ASKED_SHARE, true).apply();
-        new AlertDialog.Builder(this).setTitle("Help improve Battery Watchdog?")
+        dialog().setTitle("Help improve Battery Watchdog?")
             .setMessage("The warnings are simple for now. Logs from real cars, especially ones whose 12V battery "
                 + "later failed, would help build smarter checks for everyone.\n\n"
                 + "This is completely optional, and nothing is ever sent from your car. If you'd like to help, "
                 + "after a few weeks of driving you can export your data to a USB drive and share it on GitHub.\n\n"
-                + "You won't be asked again. The steps are always in Advanced \u2192 Share data.")
+                + "You won't be asked again. The steps are always in Settings → Share Data.")
             .setPositiveButton("Show me how", new DialogInterface.OnClickListener() {
                 public void onClick(DialogInterface di, int w) { showShareSteps(); } })
             .setNegativeButton("No thanks", null).show();
     }
 
-    void showShareSteps() {
-        new AlertDialog.Builder(this).setTitle("Share your data (optional)")
+    private void showShareSteps() {
+        dialog().setTitle("Share your data (optional)")
             .setMessage("1. Drive as usual for a few weeks. The longer the log, the more useful it is.\n"
-                + "2. Insert a USB drive and tap Export below (or Advanced \u2192 Export to USB). Choose "
+                + "2. Insert a USB drive and tap Export below (or Settings → Export to USB). Choose "
                 + "\"For sharing, dates hidden\" if you'd rather not show when you drive.\n"
-                + "3. On a computer or phone, go to github.com/zpoon/gen5w-BatteryWatchdog, open Issues \u2192 "
-                + "New issue \u2192 Share battery data, fill in what you know about your 12V battery, and attach "
+                + "3. On a computer or phone, go to github.com/zpoon/gen5w-BatteryWatchdog, open Issues → "
+                + "New issue → Share battery data, fill in what you know about your 12V battery, and attach "
                 + "the .zip from the drive.\n\n"
                 + "If your battery fails or is replaced later, a comment on that issue helps a lot.\n\n"
                 + "An export has no location, VIN or account details.")
@@ -675,112 +742,37 @@ public class MainActivity extends Activity {
             .setNegativeButton("Close", null).show();
     }
 
-    static final String SVC_ID = "battery.watchdog/watch";
-    static final String SVC_LOG = "/data/nemesis/logs/battery.watchdog/watch.log";
-    static final String SVC_SCRIPT = "/data/nemesis/apps/battery.watchdog/svc/watchdog.sh";
-
-    void showDiagnostics() {
-        new AlertDialog.Builder(this).setTitle("Diagnostics").setMessage(buildDiagnostics())
+    // ---- tools ----------------------------------------------------------------------
+    private void showDiagnostics() {
+        dialog().setTitle("Diagnostics").setMessage(Diagnostics.build(sh, firmware))
             .setPositiveButton("Close", null).show();
     }
 
-    /** Diagnostics text, shown in the dialog and saved by the USB export. */
-    String buildDiagnostics() {
-        StringBuilder d = new StringBuilder();
-        d.append("service: ").append(runRoot(NEM + " service status " + SVC_ID + " 2>&1").trim()).append("\n");
-        d.append("app: ").append(appVersion()).append("   firmware: ").append(fw).append("\n");
-        d.append("verification: ").append(verifyState).append(verifySource.length() > 0 ? " (" + verifySource + ")" : "")
-            .append("  soc=").append(txSoc).append(" hv=").append(txHv).append(" soh=").append(txSoh).append("\n");
-        d.append("logged too (by name): ").append(txExtra.isEmpty() ? "none" : txExtra.toString()).append("\n");
-        d.append("file writes: ").append(lastWriteMethod.length() > 0 ? lastWriteMethod : "(none yet)").append("\n");
-        d.append("telematics battery-related functions (names only, nothing is called):\n")
-            .append(firstLines(batteryFunctions(), 40)).append("\n");
-        d.append("lookup by name:\n").append(firstLines(runRoot("cat " + STATE + "/resolve.log 2>/dev/null"), 8)).append("\n");
-        // newest log lines first, so the latest error is at the top
-        String log = runRoot("cat " + SVC_LOG + " 2>&1");
-        if (log.trim().length() == 0 || log.contains("No such file"))
-            log = runRoot(NEM + " log service " + SVC_ID + " 2>&1");
-        String[] lines = log.trim().split("\n");
-        d.append("service log, newest first:\n");
-        if (log.trim().length() == 0) d.append("(empty)\n");
-        for (int i = lines.length - 1, n = 0; i >= 0 && n < 15; i--, n++) d.append(lines[i]).append("\n");
-        d.append("\n");
-        // NEMESIS's own log says why it marked the service failed
-        String nl = runRoot("cat /data/nemesis/nemesis.log 2>&1");
-        String[] nlines = nl.split("\n");
-        d.append("nemesis.log, battery.watchdog lines, newest first:\n");
-        int shown = 0;
-        for (int i = nlines.length - 1; i >= 0 && shown < 12; i--) {
-            if (nlines[i].contains("battery.watchdog") || nlines[i].contains("watchdog.sh")) { d.append(nlines[i]).append("\n"); shown++; }
-        }
-        if (shown == 0) d.append(nl.contains("No such file") ? "(no /data/nemesis/nemesis.log)\n" : "(no matching lines)\n");
-        d.append("\n");
-        d.append("shell: ").append(runRoot("echo $KSH_VERSION").trim()).append("\n");
-        d.append("script file: ").append(runRoot("ls -l " + SVC_SCRIPT + " 2>&1").trim()).append("\n");
-        String chk = runRoot("/system/bin/sh -n " + SVC_SCRIPT + " 2>&1 && echo OK").trim();
-        d.append("script syntax check: ").append(chk.length() == 0 ? "(no output)" : chk).append("\n");
-        d.append("date: ").append(runRoot("date; date +%s").trim().replace("\n", "  |  ")).append("\n");
-        d.append("display: ").append(runRoot("dumpsys power | grep -E 'mWakefulness=|mScreenOn=|policy=' 2>/dev/null").trim()).append("\n\n");
-        d.append("status file:\n").append(runRoot("cat " + STATE + "/status 2>&1").trim()).append("\n\n");
-        d.append("state dir:\n").append(runRoot("ls -l " + STATE + " 2>&1").trim()).append("\n\n");
-        // outside temperature: which source the monitor used, and what each source shows now
-        String st = runRoot("cat " + STATE + "/status 2>/dev/null");
-        d.append("temperature: ").append(kv(st, "temp_c").length() > 0 ? kv(st, "temp_c") + " C via " + kv(st, "temp_src") : "none found").append("\n");
-        d.append("climate dump, OutTemp lines:\n").append(firstLines(runRoot("dumpsys com.hkmc.micom.datc 2>&1 | grep -i outtemp"), 8)).append("\n");
-        d.append("logcat temperature lines, newest:\n")
-            .append(lastLines(runRoot("logcat -d 2>/dev/null | grep -E 'outTemperature|setOutsideTempUIAdvanced'"), 3)).append("\n");
-        return d.toString();
-    }
-
-    static String firstLines(String text, int n) {
-        String t = text.trim();
-        if (t.length() == 0) return "(none)\n";
-        String[] l = t.split("\n");
-        StringBuilder b = new StringBuilder();
-        for (int i = 0; i < l.length && i < n; i++) b.append(l[i]).append("\n");
-        if (l.length > n) b.append("... (" + (l.length - n) + " more)\n");
-        return b.toString();
-    }
-
-    static String lastLines(String text, int n) {
-        String t = text.trim();
-        if (t.length() == 0) return "(none)\n";
-        String[] l = t.split("\n");
-        StringBuilder b = new StringBuilder();
-        for (int i = Math.max(0, l.length - n); i < l.length; i++) b.append(l[i]).append("\n");
-        return b.toString();
-    }
-
-    void restartService() {
+    private void restartService() {
         // empty the old log first so anything shown afterwards is from this run
-        String r = runRoot(": > " + SVC_LOG + " 2>/dev/null; "
+        String r = sh.runRoot(": > " + SVC_LOG + " 2>/dev/null; "
                 + NEM + " service stop " + SVC_ID + " 2>&1; "
                 + NEM + " service start " + SVC_ID + " 2>&1; sleep 3; "
                 + NEM + " service status " + SVC_ID + " 2>&1");
-        rawLabel.setText("Restart: " + r.trim().replace("\n", "  |  "));
-        toast("Monitor restarted. Check Diagnostics in 30 seconds.");
+        dialog().setTitle("Restart Monitor")
+            .setMessage(r.trim() + "\n\nCheck Diagnostics in 30 seconds.")
+            .setPositiveButton("Close", null).show();
     }
 
     // Runs the installed monitor script directly as root for a couple of loops
     // (BWD_TEST shortens the timings), bypassing NEMESIS. Real readings are saved.
-    void testRun() {
-        if (!verified()) { toast("Not verified on this firmware, so the test run is disabled."); return; }
-        toast("Running the monitor for about 10 seconds\u2026");
-        String out = runRoot("cd " + STATE + " && BWD_TEST=1 BWD_TEST_LOOPS=3 /system/bin/sh " + SVC_SCRIPT
+    private void testRun() {
+        if (!firmware.verified()) { toast("Not verified on this firmware, so the test run is disabled."); return; }
+        toast("Running the monitor for about 10 seconds…");
+        String out = sh.runRoot("cd " + STATE + " && BWD_TEST=1 BWD_TEST_LOOPS=3 /system/bin/sh " + SVC_SCRIPT
                 + " > " + STATE + "/testrun.log 2>&1; echo \"exit code $?\"; cat " + STATE + "/testrun.log");
-        new AlertDialog.Builder(this).setTitle("Test run").setMessage(out.trim().length() == 0 ? "(no output)" : out.trim())
+        dialog().setTitle("Test run").setMessage(out.trim().length() == 0 ? "(no output)" : out.trim())
             .setPositiveButton("Close", null).show();
         refreshData();
     }
 
-    // ---- export to USB ---------------------------------------------------------
-    static final String[] USB_ROOTS = { "/storage/usb0", "/storage/usb1", "/storage/usb2",
-            "/mnt/media_rw/usb0", "/mnt/media_rw/usb1" };
-    static final String[] STATE_FILES = { "log.csv", "log.old.csv", "sessions", "warnings", "status", "txn",
-            "enabled", "warn_pct", "drop_pct", "interval_s", "toast_start", "decode", "scale_x10" };
-
-    void exportToUsb() {
-        new AlertDialog.Builder(this).setTitle("Export to USB")
+    private void exportToUsb() {
+        dialog().setTitle("Export to USB")
             .setMessage("Export writes a folder you can open in Excel or Google Sheets, and a zip of the same "
                 + "files, ready to attach to a \"Share battery data\" issue.\n\n"
                 + "\"For sharing, dates hidden\" writes only a zip with the battery log, with every date moved back "
@@ -792,509 +784,31 @@ public class MainActivity extends Activity {
             .setNegativeButton("Cancel", null).show();
     }
 
-    void runExport(final boolean hideDates) {
-        toast("Exporting\u2026");
+    private void runExport(final boolean hideDates) {
+        toast("Exporting…");
         new Thread(new Runnable() { public void run() {
-            final String msg = hideDates ? doShareExport() : doExport();
+            final String msg = hideDates ? export.doShareExport() : export.doExport();
             handler.post(new Runnable() { public void run() {
-                new AlertDialog.Builder(MainActivity.this).setTitle("Export to USB").setMessage(msg)
+                dialog().setTitle("Export to USB").setMessage(msg)
                     .setPositiveButton("Close", null).show();
             } });
         } }).start();
     }
 
-    /** the first writable USB root, or null */
-    String usbRoot() {
-        StringBuilder probe = new StringBuilder();
-        for (String r : USB_ROOTS) {
-            probe.append("[ -d " + r + " ] && touch " + r + "/.bwd_w 2>/dev/null && rm " + r + "/.bwd_w && echo " + r + " && exit 0; ");
-        }
-        String usb = runRoot("( " + probe + " ) 2>/dev/null").trim();
-        if (usb.length() == 0 || !usb.startsWith("/")) return null;
-        return usb.split("\n")[0].trim();
+    private void confirmClearHistory() {
+        dialog().setTitle("Clear history?")
+            .setMessage("This deletes your readings, drives and warnings from the head unit. It can't be undone.")
+            .setPositiveButton("Clear", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface di, int w) { clearHistory(); } })
+            .setNegativeButton("Cancel", null).show();
     }
 
-    static final String NO_USB = "No USB drive found. Insert a FAT32 or exFAT drive and try again.";
-
-    /** state files read through root (the app can't read the state dir itself) */
-    Map<String, String> readState(String[] names) {
-        Map<String, String> m = new java.util.LinkedHashMap<String, String>();
-        for (String f : names) {
-            String q = shq(STATE + "/" + f);
-            if (runRoot("[ -f " + q + " ] && echo y").trim().equals("y")) m.put(f, runRoot("cat " + q + " 2>/dev/null"));
-        }
-        return m;
-    }
-
-    /** Export for sharing: only a zip, dates shifted, no file name or entry time that shows the date. */
-    String doShareExport() {
-        String usb = usbRoot();
-        if (usb == null) return NO_USB;
-        Map<String, String> raw = readState(ShareZip.SHARE_FILES);
-        if (raw.get("log.csv") == null && raw.get("log.old.csv") == null) return "There are no readings to export yet.";
-        String info = "app: " + appVersion() + "\nfirmware: " + fw + "\nverification: " + verifyState + "\n";
-        String name = "BatteryWatchdog-share-" + ShareZip.randomId() + ".zip";
-        String err;
-        try { err = writeRootBytes(usb + "/" + name, ShareZip.share(raw, info, ShareZip.randomShift())); }
-        catch (Exception e) { err = e.toString(); }
-        runRoot("sync");
-        if (err.length() > 0) return "Couldn't write " + name + " to " + usb + ":\n" + err;
-        return "Wrote " + name + " to " + usb + ".\n\nIt has the battery log, drives and warnings, with every date moved back "
-            + "by the same random number of weeks. Attach it to a \"Share battery data\" issue on GitHub. Thank you!";
-    }
-
-    String doExport() {
-        String usb = usbRoot();
-        if (usb == null) return NO_USB;
-
-        String stamp = new SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(new Date());
-        String dir = usb + "/BatteryWatchdog-export-" + stamp;
-        runRoot("mkdir -p '" + dir + "/raw'");
-
-        // raw copies (cat: KitKat's toolbox has no cp)
-        StringBuilder cp = new StringBuilder();
-        for (String f : STATE_FILES) cp.append("[ -f " + STATE + "/" + f + " ] && cat " + STATE + "/" + f + " > '" + dir + "/raw/" + f + "'; ");
-        runRoot(cp.toString());
-
-        // readable files built here, then copied over by root
-        SimpleDateFormat t = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
-        int rows = 0;
-        StringBuilder rd = new StringBuilder("time,event,v12_pct,main_battery_pct,outside_f,hv_soh,raw,sensor_state,sensor_invalid,sensor_error,aux_saver_opt,charging_status\n");
-        String log = runRoot("cat " + STATE + "/log.old.csv " + STATE + "/log.csv 2>/dev/null");
-        for (String line : log.split("\n")) {
-            String[] f = line.split(",", -1);
-            if (f.length < 4) continue;
-            long ts = parseL(f[0], 0);
-            if (ts <= 0) continue;
-            int p = parse(f[3], -1);
-            String hv = f.length > 5 && parse(f[5], -1) >= 0 ? fmt10(parse(f[5], -1)) : "";
-            String tf = f.length > 6 && f[6].trim().length() > 0 ? String.valueOf(Math.round(parse(f[6], 0) * 9 / 5f + 32)) : "";
-            rd.append(t.format(new Date(ts * 1000))).append(',').append(f[1]).append(',')
-              .append(p >= 0 ? fmt10(p) : "").append(',').append(hv).append(',').append(tf).append(',')
-              .append(f.length > 4 ? f[4] : "").append(',').append(f[2]);
-            for (int k = 7; k <= 11; k++) rd.append(',').append(f.length > k ? f[k] : "");
-            rd.append('\n');
-            rows++;
-        }
-
-        // one row per finished drive, with the parked time and change before it
-        StringBuilder dv = new StringBuilder("drive_start,drive_minutes,v12_start_pct,v12_end_pct,change_during_drive_pts,parked_before_minutes,change_while_parked_pts\n");
-        long prevEnd = -1; int prevEndPct = -1;
-        int drives = 0;
-        for (String line : runRoot("cat " + STATE + "/sessions 2>/dev/null").split("\n")) {
-            String[] f = line.trim().split("\\s+");
-            if (f.length < 4) continue;
-            long st = parseL(f[0], 0); int min = parse(f[1], -1), sp = parse(f[2], -1), ep = parse(f[3], -1);
-            if (st <= 0 || min < 0 || sp < 0 || ep < 0) continue;
-            String parked = prevEnd > 0 && st > prevEnd ? String.valueOf((st - prevEnd) / 60) : "";
-            String pchg = prevEnd > 0 && st > prevEnd ? fmtSigned10(sp - prevEndPct) : "";
-            dv.append(t.format(new Date(st * 1000))).append(',').append(min).append(',').append(fmt10(sp)).append(',')
-              .append(fmt10(ep)).append(',').append(fmtSigned10(ep - sp)).append(',').append(parked).append(',').append(pchg).append('\n');
-            prevEnd = st + min * 60L; prevEndPct = ep; drives++;
-        }
-
-        StringBuilder wr = new StringBuilder();
-        for (String line : runRoot("cat " + STATE + "/warnings 2>/dev/null").split("\n")) {
-            String l = line.trim();
-            int sp = l.indexOf(' ');
-            if (sp <= 0) continue;
-            long ts = parseL(l.substring(0, sp), 0);
-            wr.append(ts > 0 ? t.format(new Date(ts * 1000)) : l.substring(0, sp)).append("  ").append(l.substring(sp + 1)).append('\n');
-        }
-        if (wr.length() == 0) wr.append("No warnings recorded.\n");
-
-        String err = "";
-        err += writeToUsb("readings.csv", rd.toString(), dir);
-        err += writeToUsb("drives.csv", dv.toString(), dir);
-        err += writeToUsb("warnings.txt", wr.toString(), dir);
-        String diag = "Battery Watchdog export " + stamp + "\n\n" + buildDiagnostics();
-        err += writeToUsb("diagnostics.txt", diag, dir);
-        // the same files as one zip, ready to attach to an issue
-        try {
-            Map<String, String> z = new java.util.LinkedHashMap<String, String>();
-            z.put("readings.csv", rd.toString()); z.put("drives.csv", dv.toString());
-            z.put("warnings.txt", wr.toString()); z.put("diagnostics.txt", diag);
-            for (Map.Entry<String, String> e : readState(STATE_FILES).entrySet()) z.put("raw/" + e.getKey(), e.getValue());
-            String zr = writeRootBytes(dir + ".zip", ShareZip.plain(z));
-            if (zr.length() > 0) err += "zip: " + zr + "\n";
-        } catch (Exception e) { err += "zip: " + e + "\n"; }
-        runRoot("sync");
-        String rawList = runRoot("ls " + shq(dir + "/raw") + " 2>&1").trim().replace("\n", " ");
-        if (err.length() > 0) return "Some files couldn't be written to " + dir + ":\n" + err
-            + "\nraw/ on the drive: " + (rawList.length() > 0 ? rawList : "(empty)");
-        return "Exported " + rows + " readings and " + drives + " drives (written via " + lastWriteMethod + ") to\n" + dir
-            + "\n\nreadings.csv and drives.csv open in Excel or Google Sheets. raw/ has the original files. "
-            + "The .zip beside the folder has the same files, ready to attach to a \"Share battery data\" issue.";
-    }
-
-    String writeToUsb(String name, String content, String dir) {
-        String r = writeRoot(dir + "/" + name, content);
-        return r.length() == 0 ? "" : name + ": " + r + "\n";
-    }
-
-    static String fmtSigned10(int v) { return (v > 0 ? "+" : v < 0 ? "-" : "") + fmt10(Math.abs(v)); }
-
-    void clearHistory() {
-        runRoot("rm -f " + STATE + "/log.csv " + STATE + "/log.old.csv " + STATE + "/sessions "
+    private void clearHistory() {
+        sh.runRoot("rm -f " + STATE + "/log.csv " + STATE + "/log.old.csv " + STATE + "/sessions "
                 + STATE + "/warnings " + STATE + "/lines");
         toast("History cleared");
         refreshData();
     }
 
-    // ---- config I/O via `nemesis root -c` -------------------------------------
-    String runRoot(String cmd) {
-        StringBuilder out = new StringBuilder();
-        try {
-            Process p = Runtime.getRuntime().exec(new String[] { NEM, "root", "-c", cmd });
-            BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
-            String line;
-            while ((line = r.readLine()) != null) out.append(line).append("\n");
-            p.waitFor();
-        } catch (Exception e) {
-            return "ERR " + e.getMessage();
-        }
-        return out.toString();
-    }
-
-    /**
-     * Writes {@code content} to {@code path} as root. Getting text from this app
-     * to a root shell isn't straightforward on the head unit, so it tries several
-     * ways in turn and checks each by reading the file back:
-     *   1. stage it in the app's external files dir (shared storage, readable by
-     *      root), then `cat` it into place;
-     *   2. stage it in the app's cache, world-readable, then `cat`;
-     *   3. pipe it to `cat > path` on the root shell's stdin;
-     *   4. append it in small chunks with mksh's `print -r` (no escape handling).
-     * Returns "" on success, otherwise what each attempt did. lastWriteMethod
-     * records which one worked (shown in Diagnostics).
-     */
-    /** Write bytes to a root-only path (stage then cat, or stdin); verified by size. */
-    String writeRootBytes(String path, byte[] bytes) {
-        StringBuilder why = new StringBuilder();
-        String r = writeRootStaged(path, bytes, null, why);
-        if (r != null) return r;
-        lastWriteMethod = "failed";
-        return why.toString();
-    }
-
-    /**
-     * "" when written, null when every binary-safe way failed (reasons in why).
-     * text, when given, is the same content as a string: short files are then also
-     * checked by content if the size can't be read.
-     */
-    String writeRootStaged(String path, byte[] bytes, String text, StringBuilder why) {
-        String q = shq(path);
-
-        // 1 + 2: stage a file, root copies it
-        File[] stages = { stageDir(true), stageDir(false) };
-        String[] names = { "external", "cache" };
-        for (int i = 0; i < stages.length; i++) {
-            File dir = stages[i];
-            if (dir == null) { why.append(names[i]).append(": no dir; "); continue; }
-            File tmp = new File(dir, "bwd-stage.tmp");
-            try {
-                java.io.FileOutputStream out = new java.io.FileOutputStream(tmp);
-                try { out.write(bytes); } finally { out.close(); }
-                tmp.setReadable(true, false);
-                dir.setExecutable(true, false);
-                String r = runRoot("cat " + shq(tmp.getAbsolutePath()) + " > " + q + " 2>&1").trim();
-                boolean ok = written(path, bytes, text);
-                tmp.delete();
-                if (ok) { lastWriteMethod = names[i]; return ""; }
-                why.append(names[i]).append(": ").append(r.length() > 0 ? r : "mismatch").append("; ");
-            } catch (Exception e) {
-                tmp.delete();
-                why.append(names[i]).append(": ").append(e.getMessage()).append("; ");
-            }
-        }
-
-        // 3: stdin
-        try {
-            Process p = Runtime.getRuntime().exec(new String[] { NEM, "root", "-c", "cat > " + q });
-            java.io.OutputStream o = p.getOutputStream();
-            o.write(bytes);
-            o.close();
-            p.waitFor();
-            if (written(path, bytes, text)) { lastWriteMethod = "stdin"; return ""; }
-            why.append("stdin: mismatch; ");
-        } catch (Exception e) { why.append("stdin: ").append(e.getMessage()).append("; "); }
-        return null;
-    }
-
-    String writeRoot(String path, String content) {
-        String q = shq(path);
-        StringBuilder why = new StringBuilder();
-        byte[] bytes;
-        try { bytes = content.getBytes("UTF-8"); } catch (Exception e) { return e.toString(); }
-        String staged = writeRootStaged(path, bytes, content, why);
-        if (staged != null) return staged;
-
-        // 4: small chunks, raw print (mksh's echo would interpret backslashes)
-        runRoot(": > " + q);
-        StringBuilder cmd = new StringBuilder();
-        for (String line : content.split("\n", -1)) {
-            cmd.append("print -r -- ").append(shq(line)).append(" >> ").append(q).append("; ");
-            if (cmd.length() > 1500) { runRoot(cmd.toString()); cmd.setLength(0); }
-        }
-        if (cmd.length() > 0) runRoot(cmd.toString());
-        if (sameContent(path, content)) { lastWriteMethod = "chunks"; return ""; }
-        why.append("chunks: mismatch");
-        lastWriteMethod = "failed";
-        return why.toString();
-    }
-
-    String lastWriteMethod = "";
-
-    boolean written(String path, byte[] bytes, String text) {
-        return text != null ? sameContent(path, text) : fileSize(path) == bytes.length;
-    }
-
-    static String shq(String s) { return "'" + s.replace("'", "'\\''") + "'"; }
-
-    File stageDir(boolean external) {
-        try {
-            File d = external ? getExternalFilesDir(null) : getCacheDir();
-            if (d == null) return null;
-            d.mkdirs();
-            return d.isDirectory() ? d : null;
-        } catch (Exception e) { return null; }
-    }
-
-    /**
-     * Was the file written completely? Compares its size on disk with the bytes
-     * we meant to write. (Reading the whole file back through the root shell
-     * wasn't reliable on the car: an export that worked was reported as failed,
-     * most likely because long output gets cut off on the way back.)
-     */
-    boolean sameContent(String path, String content) {
-        long want;
-        try { want = content.getBytes("UTF-8").length; } catch (Exception e) { return false; }
-        long got = fileSize(path);
-        if (got >= 0) return got == want;
-        // size unknown: fall back to comparing short files by content
-        if (want > 4096) return false;
-        String back = runRoot("cat " + shq(path) + " 2>/dev/null");
-        return back.trim().equals(content.trim());
-    }
-
-    /**
-     * Battery-related function names in the telematics service's own interface
-     * definition (the file the lookup found), with their transaction numbers.
-     * Read from the firmware file only: nothing is called. This is how to find
-     * out whether the firmware exposes more 12V data than getBatSoc.
-     */
-    String batteryFunctions() {
-        String src = kv(runRoot("cat " + STATE + "/txn 2>/dev/null"), "source");
-        if (!src.startsWith("/")) return "(no interface file recorded yet: open the app on a verified firmware first)";
-        try {
-            File f = new File(src);
-            Map<String, Integer> m;
-            String n = src.toLowerCase(Locale.US);
-            if (n.endsWith(".apk") || n.endsWith(".jar")) m = TxnResolver.transactionsInZip(f, TxnResolver.STUB, NEEDLE);
-            else {
-                try { m = TxnResolver.transactions(f, TxnResolver.STUB); }
-                catch (java.io.IOException e) { File c = viaRoot(f); m = TxnResolver.transactions(c, TxnResolver.STUB); c.delete(); }
-            }
-            java.util.TreeMap<Integer, String> hits = new java.util.TreeMap<Integer, String>();
-            for (Map.Entry<String, Integer> e : m.entrySet()) {
-                if (e.getKey().matches("(?i).*(bat|ibs|volt|soh|soc|12v|aux|ldc|charg).*")) hits.put(e.getValue(), e.getKey());
-            }
-            StringBuilder b = new StringBuilder(m.size() + " functions in " + src + "; matching:\n");
-            for (Map.Entry<Integer, String> e : hits.entrySet()) b.append("  ").append(e.getKey()).append("  ").append(e.getValue()).append("\n");
-            if (hits.isEmpty()) b.append("  (none)\n");
-            return b.toString();
-        } catch (Throwable t) {
-            return "couldn't read " + src + ": " + t;
-        }
-    }
-
-    /** File size from `ls -l` as root, or -1. Works with toolbox and busybox formats. */
-    long fileSize(String path) {
-        String l = runRoot("ls -l " + shq(path) + " 2>/dev/null").trim();
-        if (l.length() == 0 || l.startsWith("ls:")) return -1;
-        String[] t = l.split("\\s+");
-        // the size is the last plain number before the date (2026-10-30 or Oct)
-        for (int i = 1; i < t.length; i++) {
-            if (t[i].matches("\\d{4}-\\d\\d-\\d\\d") || t[i].matches("[A-Z][a-z]{2}")) {
-                for (int j = i - 1; j > 0; j--) if (t[j].matches("\\d+")) return Long.parseLong(t[j]);
-                return -1;
-            }
-        }
-        return -1;
-    }
-
-    int readInt(String name, int def) {
-        return parse(runRoot("cat " + STATE + "/" + name + " 2>/dev/null").trim(), def);
-    }
-
-    void loadConfig() {
-        enabled    = readInt("enabled", 1) == 1;
-        toastStart = readInt("toast_start", 0) == 1;
-        warnPct    = clamp(readInt("warn_pct", 60), 30, 90);
-        dropPct    = clamp(readInt("drop_pct", 15), 5, 40);
-        decode     = clamp(readInt("decode", 1), 0, 2);
-        scaleX10   = readInt("scale_x10", 10) == 5 ? 5 : 10;
-        interval   = readInt("interval_s", 300);
-    }
-
-    void saveConfig() {
-        String cmd = "mkdir -p " + STATE
-            + "; echo " + (enabled ? 1 : 0) + " > " + STATE + "/enabled"
-            + "; echo " + (toastStart ? 1 : 0) + " > " + STATE + "/toast_start"
-            + "; echo " + warnPct + " > " + STATE + "/warn_pct"
-            + "; echo " + dropPct + " > " + STATE + "/drop_pct"
-            + "; echo " + decode + " > " + STATE + "/decode"
-            + "; echo " + scaleX10 + " > " + STATE + "/scale_x10"
-            + "; echo " + interval + " > " + STATE + "/interval_s";
-        String r = runRoot(cmd);
-        toast(r.startsWith("ERR") ? "Save failed: " + r : "Saved");
-    }
-
-    void refreshButtons() {
-        enBtn.setText(enabled ? "Monitor: on" : "Monitor: off");
-        warnThrLabel.setText("Warn below " + warnPct + "%");
-        dropThrLabel.setText("Warn if it drops " + dropPct + "+ pts while parked");
-        toastBtn.setText(toastStart ? "Pop-up every start: on" : "Pop-up every start: warnings only");
-        intBtn.setText("Sample every " + (interval / 60) + " min");
-        advBtn.setText(advanced ? "Advanced \u25B4" : "Advanced \u25BE");
-        advBox.setVisibility(advanced ? View.VISIBLE : View.GONE);
-        decBtn.setText("Decode as: " + DECODE[decode]);
-        scaleBtn.setText("Scale: " + (scaleX10 == 10 ? "1 raw = 1 %" : "1 raw = 0.5 %"));
-    }
-
-    // ---- chart ----------------------------------------------------------------
-    static class Chart extends View {
-        List<long[]> drives = new ArrayList<long[]>();    // {start, end, start_pct10, end_pct10}
-        int warn10 = 600, drop10 = 150;
-        final float d;
-        final Paint bar = new Paint(Paint.ANTI_ALIAS_FLAG), startDot = new Paint(Paint.ANTI_ALIAS_FLAG),
-                endDot = new Paint(Paint.ANTI_ALIAS_FLAG), park = new Paint(Paint.ANTI_ALIAS_FLAG),
-                parkBad = new Paint(Paint.ANTI_ALIAS_FLAG), parkUp = new Paint(Paint.ANTI_ALIAS_FLAG),
-                grid = new Paint(), warnP = new Paint(), text = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-        Chart(Context c, float density) {
-            super(c);
-            d = density;
-            bar.setColor(ACCENT); bar.setStrokeWidth(4 * d);
-            startDot.setColor(Color.WHITE);
-            endDot.setColor(ACCENT);
-            park.setColor(Color.rgb(110, 118, 128)); park.setStrokeWidth(2 * d);
-            parkBad.setColor(AMBER); parkBad.setStrokeWidth(2 * d);
-            parkUp.setColor(GREEN); parkUp.setStrokeWidth(2 * d);
-            grid.setColor(Color.rgb(50, 55, 62)); grid.setStrokeWidth(d);
-            warnP.setColor(AMBER); warnP.setStrokeWidth(2 * d);
-            text.setColor(MUTED); text.setTextSize(13 * d);
-        }
-
-        void setData(List<long[]> dr, int w, int drop) { drives = dr; warn10 = w; drop10 = drop; invalidate(); }
-
-        @Override
-        protected void onDraw(Canvas c) {
-            float w = getWidth(), h = getHeight(), left = 44 * d, top = 10 * d, bottom = h - 26 * d;
-            // scale: from 5 points below the lowest value (or the warning line) up to 100 %
-            long lo10 = warn10;
-            for (long[] r : drives) lo10 = Math.min(lo10, Math.min(r[2], r[3]));
-            int lo = (int) Math.max(0, ((lo10 - 50) / 100) * 10);
-            float span = 100 - lo;
-            for (int pct = lo; pct <= 100; pct += 10) {
-                float y = bottom - (bottom - top) * (pct - lo) / span;
-                c.drawLine(left, y, w, y, grid);
-                c.drawText(pct + "%", 0, y + 5 * d, text);
-            }
-            float wy = bottom - (bottom - top) * (warn10 / 10f - lo) / span;
-            c.drawLine(left, wy, w, wy, warnP);
-            if (drives.isEmpty()) { c.drawText("No drives yet. They appear here as you drive.", left + 12 * d, h / 2, text); return; }
-
-            int n = drives.size();
-            float slot = (w - left - 8 * d) / Math.max(n, 6);
-            SimpleDateFormat day = new SimpleDateFormat("MMM d", Locale.US);
-            String lastLabel = "";
-            float lastLabelX = -1000, px = 0, py = 0;
-            for (int i = 0; i < n; i++) {
-                long[] r = drives.get(i);
-                float x = left + slot * (i + 0.5f);
-                float ys = bottom - (bottom - top) * (r[2] / 10f - lo) / span;
-                float ye = bottom - (bottom - top) * (r[3] / 10f - lo) / span;
-                if (i > 0) {   // parked: previous end -> this start, dashed
-                    long change = r[2] - drives.get(i - 1)[3];
-                    Paint pp = change <= -drop10 ? parkBad : change >= 10 ? parkUp : park;
-                    dashed(c, px, py, x, ys, pp);
-                }
-                c.drawLine(x, ys, x, ye, bar);
-                c.drawCircle(x, ys, 5 * d, startDot);
-                c.drawCircle(x, ye, 5 * d, endDot);
-                px = x; py = ye;
-                String lab = day.format(new java.util.Date(r[0] * 1000));
-                if (!lab.equals(lastLabel) && x - lastLabelX > 60 * d) {
-                    c.drawText(lab, x - 18 * d, h - 6 * d, text);
-                    lastLabel = lab; lastLabelX = x;
-                }
-            }
-        }
-
-        static void dashed(Canvas c, float x1, float y1, float x2, float y2, Paint p) {
-            float dx = x2 - x1, dy = y2 - y1, len = (float) Math.sqrt(dx * dx + dy * dy);
-            if (len < 1) return;
-            float step = 8, on = 5;
-            for (float t = 0; t < len; t += step) {
-                float a = t / len, b = Math.min(t + on, len) / len;
-                c.drawLine(x1 + dx * a, y1 + dy * a, x1 + dx * b, y1 + dy * b, p);
-            }
-        }
-    }
-
-    // ---- helpers --------------------------------------------------------------
-    interface Setter { void set(int v); }
-
-    static String kv(String text, String key) {
-        for (String l : text.split("\n")) if (l.startsWith(key + "=")) return l.substring(key.length() + 1).trim();
-        return "";
-    }
-    static int parse(String s, int d) { try { return Integer.parseInt(s.trim()); } catch (Exception e) { return d; } }
-    static long parseL(String s, long d) { try { return Long.parseLong(s.trim()); } catch (Exception e) { return d; } }
-    static String fmt10(int v) { return (v / 10) + "." + (v % 10); }
-    static String duration(int min) {
-        if (min < 60) return min + " min";
-        if (min < 48 * 60) return (min / 60) + " h " + (min % 60) + " min";
-        return (min / 1440) + " d " + ((min % 1440) / 60) + " h";
-    }
-    static String time(long epoch) {
-        return new SimpleDateFormat("MMM d, h:mm a", Locale.US).format(new Date(epoch * 1000));
-    }
-    int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density); }
-    int clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
-    void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
-
-    SeekBar seek(final int min, int max, int val, final Setter s) {
-        SeekBar sb = new SeekBar(this);
-        sb.setMax(max - min);
-        sb.setProgress(val - min);
-        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onProgressChanged(SeekBar b, int p, boolean u) { s.set(p + min); }
-            public void onStartTrackingTouch(SeekBar b) {}
-            public void onStopTrackingTouch(SeekBar b) {}
-        });
-        return sb;
-    }
-    Button button(String s, View.OnClickListener l) {
-        Button b = new Button(this); b.setText(s); b.setTextSize(17); b.setMinHeight(dp(56)); b.setOnClickListener(l); return b;
-    }
-    LinearLayout column() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
-    View spacer() { View v = new View(this); v.setLayoutParams(new LinearLayout.LayoutParams(1, 0, 1f)); return v; }
-    TextView label() { TextView t = new TextView(this); t.setTextColor(Color.WHITE); t.setTextSize(17); t.setPadding(0, dp(10), 0, 0); return t; }
-    TextView title(String s) {
-        TextView t = new TextView(this);
-        t.setText(s); t.setTextColor(Color.WHITE); t.setTextSize(26);
-        t.setPadding(0, 0, 0, dp(8)); return t;
-    }
-    TextView section(String s) {
-        TextView t = new TextView(this);
-        t.setText(s); t.setTextColor(ACCENT); t.setTextSize(17);
-        t.setPadding(0, dp(14), 0, dp(4)); return t;
-    }
-    TextView hint(String s) {
-        TextView t = new TextView(this);
-        t.setText(s); t.setTextColor(MUTED); t.setTextSize(15);
-        t.setPadding(0, 0, 0, dp(8)); return t;
-    }
+    private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
 }

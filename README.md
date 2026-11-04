@@ -11,8 +11,11 @@ On E-GMP cars like the Ioniq 5, a dead 12V battery means the car won't turn
 on, even with a full main battery. Battery Watchdog logs the 12V charge level
 on every drive and tells you when something looks wrong.
 
-![Battery Watchdog on a Gen5W head unit: 12V charge, parked drain, HV battery health, history chart and settings](docs/screenshot.png)
-<sub>Mockup of the app on the 1920×720 Gen5W screen, with sample data.</sub>
+> **This is a fork** of [zpoon/gen5w-BatteryWatchdog](https://github.com/zpoon/gen5w-BatteryWatchdog)
+> with a redesigned interface: clean cards, a separate Settings page, and
+> automatic day and night colors. The monitoring service, warnings and safety
+> checks are unchanged. Install it from this repository's builds, because the
+> NEMESIS Package Store offers the original.
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y3L829W9V7)
 
@@ -36,11 +39,12 @@ helps just as much.
   - it **didn't recover during your last drive** (a drive of 20+ minutes that
     ended lower than it started).
 - **Parked drain:** how long the car sat before this drive, how much the 12V
-  changed in that time, and the rate per day.
+  changed in that time, and the 7-day average per day.
 - **Context:** main battery charge and outside temperature, since cold weather
   lowers 12V readings.
-- **HV battery health (SOH)** in a color-coded box (display only).
-- **History chart** of recent readings, with the start of each drive marked.
+- **HV battery health (SOH)** as one of the checks (display only).
+- **History chart** of recent drives and the parked time between them.
+- **Day and night colors** that follow the head unit's display mode.
 - **Export to USB:** your readings, drives and warnings as spreadsheet-ready
   CSV files, plus a zip ready to share (optionally with the dates hidden).
 - **Built-in diagnostics** for troubleshooting.
@@ -73,8 +77,9 @@ the table can grow. If it shows **Paused**, see [Safety](#safety).
 
 ## Install
 
-**From the Package Store (NEMESIS 1.16 or newer):** open the NEMESIS Manager,
-go to **Package Store**, select **Battery Watchdog** and tap **Install**.
+If you have the original Battery Watchdog installed, [uninstall](#uninstall) it
+first: this fork's builds are signed with a different key. Settings and history
+are kept.
 
 **From USB:**
 
@@ -88,53 +93,61 @@ go to **Package Store**, select **Battery Watchdog** and tap **Install**.
 4. Open **Battery Watchdog** from the app list. The first reading appears
    within about a minute.
 
-**To update:** on NEMESIS 1.16 or newer, update from the Package Store, or
-install the new USB bundle over the top and confirm the update. NEMESIS 1.15
-and older can't update a package in place, so [uninstall](#uninstall) first,
-then install the new version. Settings and history are kept either way.
+**To update:** on NEMESIS 1.16 or newer, install the new USB bundle over the
+top and confirm the update. NEMESIS 1.15 and older can't update a package in
+place, so [uninstall](#uninstall) first, then install the new version. If a
+build was signed with a different key, uninstall first on any version. Settings
+and history are kept either way.
 
 ## Using it
 
-The screen has three columns:
+The home screen has three cards:
 
-- **Left:** the 12V charge (green, or amber below your warning level), how
-  long the car was parked and how the 12V changed meanwhile, main battery
-  charge, outside temperature, the latest warning, the HV battery health box,
-  and a **last 7 days** summary: number of drives, lowest start, average
-  parked drain per day, and how many times the car recharged the 12V while
-  parked.
-- **Middle:** your last 30 drives. Each drive is a bar from the 12V at the
-  start (white dot) to the end (blue dot); a healthy drive ends level or
-  higher. The dashed line between drives is the parked time: amber if it
-  dropped past your warning amount, green if the car recharged it. The scale
+- **12V Battery:** the charge, a one-word status (Normal, Low or Attention), when
+  it was last read, a gauge with your warning level marked, and the main battery
+  charge and outside temperature.
+- **Last 7 Days:** the number of drives, lowest start, average parked change per
+  day and how many times the car recharged the 12V while parked. Below them is a
+  chart of your last 30 drives. Each drive is a bar from the 12V at the start
+  to the end; a healthy drive ends level or higher. The thin line between drives
+  is the parked time, amber if it dropped past your warning amount. The scale
   adjusts to your readings and always shows the warning line.
-- **Right:** settings, with **Save** at the top.
+- **Checks:** 12V at start, parked drain, the last drive of 20+ minutes, HV
+  battery health and firmware. A green check is fine and a red cross needs a
+  look; amber and gray mean caution and not enough data. **Settings** is at the
+  top of this card.
 
 A stop counts as a new drive only if the screen was off for 10 minutes or
 more, so quick stops don't clutter the history.
 
+The colors follow the head unit's day and night display mode.
+
 With the head unit's **split view** open, the app keeps clear of the map
-panel on the right: the status column and graph stay visible and the
-settings column is hidden until the split view closes.
+panel on the right: the 12V Battery and Last 7 Days cards stay visible, and
+Checks and Settings return when the split view closes.
+
+**Settings** has its own page, and the car's back button returns to the home
+screen.
 
 | Setting | Default | What it does |
 |---|---|---|
-| Monitor | On | Turns background monitoring on or off |
-| Warn below | 60 % | Warn if the 12V is below this at the start of a drive |
-| Warn if it drops | 15 pts | Warn if it fell this much while parked |
-| Pop-up every start | Warnings only | Also show the reading on every start |
-| Advanced → Sample every | 5 min | How often to read while the screen is on |
+| Monitor 12V | On | Turns background monitoring on or off |
+| Warn Below | 60 % | Warn if the 12V is below this at the start of a drive |
+| Warn on Drop | 15 pts | Warn if it fell this much while parked |
+| Pop-Up | Warnings Only | Choose Every Start to also show the reading on every start |
+| Sensor → Read Every | 5 min | How often to read while the screen is on |
 
-Tap **Save** after changing settings; they apply from the next drive.
+Settings save as you change them and apply from the next drive.
 
-**HV battery health** colors: green 90 and above, amber 75–89, red below 75.
+**HV battery health** in Checks: Good is 90 and above, Fair is 75–89, Low is
+below 75.
 It's the car's health index for the main battery pack (100 = new), not a
 capacity measurement, and it never triggers warnings.
 
 ### Exporting your data
 
 Insert a USB drive (FAT32 or exFAT, ideally one **without** a `NEMESIS.data`
-file on it), then tap **Advanced → Export to USB** and choose:
+file on it), then tap **Settings → Export to USB** and choose:
 
 - **Export:** a folder like `BatteryWatchdog-export-2026-10-30_0815/`, and a
   `.zip` of the same files beside it, ready to attach to an issue.
@@ -164,7 +177,7 @@ the 12V recovers at the start of a drive or whether it drains faster while
 parked than it used to, need real logs from many cars, and above all from
 batteries that later failed or were replaced. Sharing is entirely optional:
 the app mentions it once, the first time it has readings, and the steps are
-always under **Advanced → Share data**. Nothing is ever sent from the car. If
+always under **Settings → Share Data**. Nothing is ever sent from the car. If
 you're willing to help:
 
 1. Export to USB as above. A few weeks of driving is useful, a few months is
@@ -193,7 +206,7 @@ for example:
 
 > 12V dropped 16.0 pts while parked: 84.0% -> 68.0%, outside 34F
 
-Warnings also appear in amber in the app. Nothing is sent to your phone or the
+Warnings also appear in the app, in amber on the 12V Battery card and as red crosses in Checks. Nothing is sent to your phone or the
 instrument cluster.
 
 ### Reading the numbers
@@ -259,7 +272,7 @@ number it hasn't checked:
    together with your firmware version.
 2. If that isn't possible, it uses built-in numbers **only on firmware that has
    been verified by hand** (see [Compatibility](#compatibility)).
-3. Otherwise it shows **Paused** and reads nothing. Under **Advanced** there's
+3. Otherwise it shows **Paused** and reads nothing. Under **Settings → Tools** there's
    an option to use the built-in numbers anyway, for people who have checked
    their car as described in [docs/TECHNICAL.md](docs/TECHNICAL.md#porting-to-another-car-or-firmware).
 
@@ -277,12 +290,12 @@ The app shows **Paused**: your firmware couldn't be verified; see [Safety](#safe
 
 The app shows **Waiting…** and no reading:
 
-1. Open **Advanced → Diagnostics**. The first line is the service status; it
+1. Open **Settings → Diagnostics**. The first line is the service status; it
    should end in `running`. Below it, the service log is listed newest first.
-2. **Advanced → Test run (10 s)** runs the monitor once, directly. If it shows
+2. **Settings → Test Run (10 s)** runs the monitor once, directly. If it shows
    a 12V reading and `exit code 0`, the monitor itself works and the problem
    is with how NEMESIS is starting it.
-3. **Advanced → Restart monitor** stops and starts the background service.
+3. **Settings → Restart Monitor** stops and starts the background service.
 
 If Diagnostics or NEMESIS's own log shows `giving up on battery.watchdog/...`,
 see [docs/TECHNICAL.md](docs/TECHNICAL.md#nemesis-giving-up).
